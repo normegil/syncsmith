@@ -1,6 +1,6 @@
 # Rust coding guidelines
 
-These are Rust-specific guidelines, extending and taking precedence over `docs/rules/commons.md`.
+These are Rust-specific guidelines, extending and taking precedence over common rules.
 
 ## Implementation Best Practices
 
