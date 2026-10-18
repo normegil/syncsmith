@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use syncsmith::SyncsmithError;
-use syncsmith::init::Prompter;
+use syncsmith::init::{Choice, Prompter};
 
 /// One scripted answer of a [`ScriptedPrompter`].
 #[derive(Debug, Clone)]
@@ -65,7 +65,7 @@ impl ScriptedPrompter {
 }
 
 impl Prompter for ScriptedPrompter {
-    fn confirm(&self, _message: &str) -> Result<bool, SyncsmithError> {
+    fn confirm(&self, _message: &str, _default: Option<bool>) -> Result<bool, SyncsmithError> {
         match self.next("confirm") {
             Answer::Confirm(value) => Ok(value),
             Answer::Interrupt => Err(SyncsmithError::Aborted),
@@ -73,7 +73,12 @@ impl Prompter for ScriptedPrompter {
         }
     }
 
-    fn select(&self, _message: &str, _options: &[String]) -> Result<String, SyncsmithError> {
+    fn select(
+        &self,
+        _message: &str,
+        _options: &[Choice],
+        _default: Option<&str>,
+    ) -> Result<String, SyncsmithError> {
         match self.next("select") {
             Answer::Select(value) => Ok(value),
             Answer::Interrupt => Err(SyncsmithError::Aborted),

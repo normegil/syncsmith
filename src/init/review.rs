@@ -1,76 +1,105 @@
-//! Review summary and per-entry edit/remove actions.
+//! Review summary and per-entry edit/remove/add actions.
 
 use std::path::PathBuf;
 
 use crate::config::{Source, SyncEntry};
 use crate::error::SyncsmithError;
+use colored::Colorize;
 
-use super::flow::{InitState, MAX_INPUT_ATTEMPTS, Prompter, ask_mode, ask_policy};
+use super::flow::{Choice, Flow, InitState, MAX_INPUT_ATTEMPTS, Prompter};
 use super::source_loader::SourceRef;
 use super::target;
 
-/// Actions offered by the review loop.
-pub const REVIEW_ACTIONS: [&str; 3] = ["confirm", "edit entry", "remove entry"];
+/// Width of the separator lines of the review summary.
+const SEPARATOR_WIDTH: usize = 60;
 
-/// Runs the review loop until the user confirms or every entry is removed.
+/// Actions offered by the review loop.
+pub const REVIEW_ACTIONS: [&str; 4] = [
+    "Validate",
+    "Add another entry",
+    "Edit entry",
+    "Remove entry",
+];
+
+/// Runs the review loop until the user validates or every entry is removed.
 ///
-/// Prints the summary table to stderr (stdout stays clean) before each action
+/// Prints the summary block to stderr (stdout stays clean) before each action
 /// prompt.
-pub fn review(prompter: &dyn Prompter, state: &mut InitState) -> Result<(), SyncsmithError> {
+pub fn review(flow: &Flow, state: &mut InitState) -> Result<(), SyncsmithError> {
     loop {
         if state.is_empty() {
             return Ok(());
         }
-        for row in summary_rows(state) {
-            eprintln!("{row}");
-        }
-        match ask_action(prompter)? {
-            ReviewAction::Confirm => return Ok(()),
-            ReviewAction::Edit => edit_entry(prompter, state)?,
-            ReviewAction::Remove => remove_entry(prompter, state)?,
+        print_summary(state);
+        match ask_action(flow.prompter())? {
+            ReviewAction::Validate => return Ok(()),
+            ReviewAction::Edit => edit_entry(flow, state)?,
+            ReviewAction::Remove => remove_entry(flow.prompter(), state)?,
+            ReviewAction::Add => flow.add_source(state)?,
         }
     }
 }
 
 enum ReviewAction {
-    Confirm,
+    Validate,
     Edit,
     Remove,
+    Add,
 }
 
 fn ask_action(prompter: &dyn Prompter) -> Result<ReviewAction, SyncsmithError> {
+    let choices: Vec<Choice> = REVIEW_ACTIONS
+        .iter()
+        .map(|action| Choice::plain(action))
+        .collect();
     let action = prompter.select(
-        "Review the entries above: confirm them, or edit or remove an entry",
-        &owned(&REVIEW_ACTIONS),
+        "Do you validate the current synchronization list?",
+        &choices,
+        None,
     )?;
     match action.as_str() {
-        "confirm" => Ok(ReviewAction::Confirm),
-        "edit entry" => Ok(ReviewAction::Edit),
-        "remove entry" => Ok(ReviewAction::Remove),
+        "Validate" => Ok(ReviewAction::Validate),
+        "Edit entry" => Ok(ReviewAction::Edit),
+        "Remove entry" => Ok(ReviewAction::Remove),
+        "Add another entry" => Ok(ReviewAction::Add),
         other => Err(SyncsmithError::InvalidArguments {
             reason: format!("unknown review action `{other}`"),
         }),
     }
 }
 
-/// One line per entry: `1. source -> target [mode / policy]`.
-pub fn summary_rows(state: &InitState) -> Vec<String> {
-    state
-        .all()
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| format!("{}. {}", index + 1, entry_label(entry)))
-        .collect()
+/// Prints the review summary block to stderr.
+fn print_summary(state: &InitState) {
+    let separator = "-".repeat(SEPARATOR_WIDTH);
+    eprintln!();
+    eprintln!("Synchronization summary");
+    eprintln!("{separator}");
+    for (index, entry) in state.all().iter().enumerate() {
+        let headline = format!(
+            "{}. {} -> {}",
+            index + 1,
+            source_label(&entry.source),
+            entry.target.to_string_lossy()
+        );
+        // NOTE: `colored` resolves NO_COLOR/TTY against stdout while this
+        // block prints to stderr, so a redirected stderr can still receive
+        // color codes when stdout is a terminal. Accepted trade-off.
+        eprintln!("{}", headline.green());
+        eprintln!("  {} {}", "Mode:".purple(), entry.mode.label());
+        eprintln!("  {} {}", "Policy:".purple(), entry.policy.label());
+    }
+    eprintln!("{separator}");
 }
 
-/// Single-line description of an entry, also used as its review label.
+/// Single-line description of an entry, used as its review label for the
+/// edit and remove pick lists.
 pub fn entry_label(entry: &SyncEntry) -> String {
     format!(
         "{} -> {} [{} / {}]",
         source_label(&entry.source),
         entry.target.to_string_lossy(),
-        entry.mode.name(),
-        entry.policy.name()
+        entry.mode.label(),
+        entry.policy.label()
     )
 }
 
@@ -88,9 +117,11 @@ fn source_label(source: &Source) -> String {
     }
 }
 
-fn edit_entry(prompter: &dyn Prompter, state: &mut InitState) -> Result<(), SyncsmithError> {
+fn edit_entry(flow: &Flow, state: &mut InitState) -> Result<(), SyncsmithError> {
+    let prompter = flow.prompter();
     let labels = label_rows(state);
-    let selected = prompter.select("Entry to edit", &labels)?;
+    let choices: Vec<Choice> = labels.iter().map(|label| Choice::plain(label)).collect();
+    let selected = prompter.select("Entry to edit", &choices, None)?;
     let Some(index) = labels.iter().position(|label| *label == selected) else {
         return Err(SyncsmithError::InvalidArguments {
             reason: format!("unknown entry `{selected}`"),
@@ -99,9 +130,14 @@ fn edit_entry(prompter: &dyn Prompter, state: &mut InitState) -> Result<(), Sync
     let Some(current) = state.get(index).cloned() else {
         return Ok(());
     };
-    let field = prompter.select("Field to change", &owned(&["target", "mode", "policy"]))?;
+    let fields = [
+        Choice::plain("Target"),
+        Choice::plain("Mode"),
+        Choice::plain("Policy"),
+    ];
+    let field = prompter.select("Field to change", &fields, None)?;
     let updated = match field.as_str() {
-        "target" => {
+        "Target" => {
             let request = EditRequest {
                 prompter,
                 state,
@@ -110,12 +146,12 @@ fn edit_entry(prompter: &dyn Prompter, state: &mut InitState) -> Result<(), Sync
             };
             edit_target(&request)?
         }
-        "mode" => SyncEntry {
-            mode: ask_mode(prompter, &SourceRef::from_source(&current.source))?,
+        "Mode" => SyncEntry {
+            mode: flow.ask_mode(&SourceRef::from_source(&current.source))?,
             ..current.clone()
         },
-        "policy" => SyncEntry {
-            policy: ask_policy(prompter)?,
+        "Policy" => SyncEntry {
+            policy: flow.ask_policy()?,
             ..current
         },
         other => {
@@ -151,9 +187,10 @@ fn edit_target(request: &EditRequest) -> Result<SyncEntry, SyncsmithError> {
         .collect::<Vec<PathBuf>>();
     let mut attempts = 0;
     loop {
-        let input = request
-            .prompter
-            .text_with_default("New target path", &request.current.target.to_string_lossy())?;
+        let input = request.prompter.text_with_default(
+            "New target path:",
+            &request.current.target.to_string_lossy(),
+        )?;
         let path = PathBuf::from(input.trim());
         let normalized = target::validate_relative_target(&path)?;
         if others.contains(&normalized) {
@@ -175,7 +212,8 @@ fn edit_target(request: &EditRequest) -> Result<SyncEntry, SyncsmithError> {
 
 fn remove_entry(prompter: &dyn Prompter, state: &mut InitState) -> Result<(), SyncsmithError> {
     let labels = label_rows(state);
-    let selected = prompter.select("Entry to remove", &labels)?;
+    let choices: Vec<Choice> = labels.iter().map(|label| Choice::plain(label)).collect();
+    let selected = prompter.select("Entry to remove", &choices, None)?;
     if let Some(index) = labels.iter().position(|label| *label == selected)
         && !state.remove(index)
     {
@@ -186,8 +224,4 @@ fn remove_entry(prompter: &dyn Prompter, state: &mut InitState) -> Result<(), Sy
 
 fn label_rows(state: &InitState) -> Vec<String> {
     state.all().iter().map(entry_label).collect()
-}
-
-fn owned(values: &[&str]) -> Vec<String> {
-    values.iter().map(|value| value.to_string()).collect()
 }

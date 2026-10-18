@@ -19,7 +19,7 @@ use super::target::{self, TargetFs};
 pub(super) const MAX_INPUT_ATTEMPTS: u8 = 3;
 
 /// Options offered when a configuration file already exists.
-pub const EXISTING_CHOICES: [&str; 3] = ["add", "restart", "abort"];
+pub const EXISTING_CHOICES: [&str; 3] = ["Add", "Restart", "Abort"];
 
 /// Kinds of source offered by the flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,17 +37,54 @@ impl SourceKind {
     /// Human-readable label used in prompts.
     pub fn name(self) -> &'static str {
         match self {
-            SourceKind::GitRepository => "git repository",
-            SourceKind::LocalFolder => "local folder",
+            SourceKind::GitRepository => "Git repository",
+            SourceKind::LocalFolder => "Local folder",
         }
     }
 
     /// Parses the labels accepted by the interactive flow.
     pub fn from_name(name: &str) -> Option<SourceKind> {
         match name {
-            "git repository" => Some(SourceKind::GitRepository),
-            "local folder" => Some(SourceKind::LocalFolder),
+            "Git repository" => Some(SourceKind::GitRepository),
+            "Local folder" => Some(SourceKind::LocalFolder),
             _ => None,
+        }
+    }
+}
+
+/// One option of a single-choice prompt: a label with an optional help
+/// description rendered next to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    /// Value returned when the option is selected.
+    pub label: String,
+    /// Help text displayed next to the label.
+    pub description: Option<String>,
+}
+
+impl Choice {
+    /// An option without help text.
+    pub fn plain(label: &str) -> Self {
+        Self {
+            label: label.to_string(),
+            description: None,
+        }
+    }
+
+    /// An option with a help description.
+    pub fn described(label: &str, description: &str) -> Self {
+        Self {
+            label: label.to_string(),
+            description: Some(description.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.description {
+            Some(description) => write!(f, "{} — {}", self.label, description),
+            None => write!(f, "{}", self.label),
         }
     }
 }
@@ -57,10 +94,17 @@ impl SourceKind {
 /// Implementations map user interruption (Ctrl-C, Esc, EOF) to
 /// [`SyncsmithError::Aborted`], which aborts the flow without writing.
 pub trait Prompter {
-    /// Yes/no question.
-    fn confirm(&self, message: &str) -> Result<bool, SyncsmithError>;
-    /// Single choice among `options`.
-    fn select(&self, message: &str, options: &[String]) -> Result<String, SyncsmithError>;
+    /// Yes/no question; `default` renders a `(Y/n)`/`(y/N)` indicator when
+    /// set, and a plain y/n prompt when `None`.
+    fn confirm(&self, message: &str, default: Option<bool>) -> Result<bool, SyncsmithError>;
+    /// Single choice among `options`, returning the chosen label; `default`
+    /// preselects the option with that label.
+    fn select(
+        &self,
+        message: &str,
+        options: &[Choice],
+        default: Option<&str>,
+    ) -> Result<String, SyncsmithError>;
     /// Free-form text.
     fn text(&self, message: &str) -> Result<String, SyncsmithError>;
     /// Free-form text with a suggested default.
@@ -94,14 +138,19 @@ pub enum ExistingChoice {
 
 /// Asks what to do with an existing configuration file.
 pub fn ask_existing(prompter: &dyn Prompter) -> Result<ExistingChoice, SyncsmithError> {
+    let choices: Vec<Choice> = EXISTING_CHOICES
+        .iter()
+        .map(|choice| Choice::plain(choice))
+        .collect();
     let choice = prompter.select(
         "A configuration file already exists. Add entries, restart from scratch, or abort?",
-        &owned(&EXISTING_CHOICES),
+        &choices,
+        None,
     )?;
     match choice.as_str() {
-        "add" => Ok(ExistingChoice::Add),
-        "restart" => Ok(ExistingChoice::Restart),
-        "abort" => Err(SyncsmithError::Aborted),
+        "Add" => Ok(ExistingChoice::Add),
+        "Restart" => Ok(ExistingChoice::Restart),
+        "Abort" => Err(SyncsmithError::Aborted),
         other => Err(SyncsmithError::InvalidArguments {
             reason: format!("unknown choice `{other}`"),
         }),
@@ -233,150 +282,288 @@ impl InitState {
     }
 }
 
-/// Runs the interactive flow: source loop, selection, target mapping,
-/// per-source mode/policy defaults, and the review loop.
-///
-/// Returns the final entry list (pre-existing entries kept, then added ones).
-pub fn run_flow(
-    state: &mut InitState,
-    prompter: &dyn Prompter,
-    fs: &dyn FlowFs,
-) -> Result<Vec<SyncEntry>, SyncsmithError> {
-    while prompter.confirm("Add a source?")? {
-        add_source(prompter, fs, state)?;
-    }
-    review::review(prompter, state)?;
-    Ok(state.all())
+/// Interactive flow driver: the prompter and the filesystem operations the
+/// flow needs, so the review loop can trigger a full add-source pass.
+pub struct Flow<'a> {
+    prompter: &'a dyn Prompter,
+    fs: &'a dyn FlowFs,
 }
 
-/// Prompts for one source and appends its entries to `state`.
-fn add_source(
-    prompter: &dyn Prompter,
-    fs: &dyn FlowFs,
-    state: &mut InitState,
-) -> Result<(), SyncsmithError> {
-    let kind = ask_source(prompter)?;
-    let source_ref = ask_source_ref(prompter, kind, state.source_defaults.as_ref())?;
-    let tree = fs.load_source(&source_ref)?;
-    if tree.items.is_empty() {
-        tracing::warn!("no files or folders found in the source");
-        return Ok(());
+impl<'a> Flow<'a> {
+    /// Builds a flow driven by `prompter` and backed by `fs`.
+    pub fn new(prompter: &'a dyn Prompter, fs: &'a dyn FlowFs) -> Self {
+        Self { prompter, fs }
     }
-    let selections = select_items(prompter, &tree)?;
-    if selections.is_empty() {
-        return Ok(());
+
+    /// The prompter driving the flow.
+    pub(super) fn prompter(&self) -> &'a dyn Prompter {
+        self.prompter
     }
-    let mut mapping = MappingContext {
-        prompter,
-        fs,
-        configured: state
+
+    /// Runs the interactive flow: source loop, selection, target mapping,
+    /// per-source mode/policy defaults, and the review loop.
+    ///
+    /// Returns the final entry list (pre-existing entries kept, then added
+    /// ones).
+    pub fn run(&self, state: &mut InitState) -> Result<Vec<SyncEntry>, SyncsmithError> {
+        while self.prompter.confirm("Add a source?", Some(true))? {
+            self.add_source(state)?;
+        }
+        review::review(self, state)?;
+        Ok(state.all())
+    }
+
+    /// Prompts for one source and appends its entries to `state`.
+    pub(super) fn add_source(&self, state: &mut InitState) -> Result<(), SyncsmithError> {
+        let kind = self.ask_source()?;
+        let source_ref = self.ask_source_ref(kind, state.source_defaults.as_ref())?;
+        let tree = self.fs.load_source(&source_ref)?;
+        if tree.items.is_empty() {
+            tracing::warn!("no files or folders found in the source");
+            return Ok(());
+        }
+        let selections = self.select_items(&tree)?;
+        if selections.is_empty() {
+            return Ok(());
+        }
+        let mut configured: Vec<PathBuf> = state
             .all()
             .iter()
             .map(|entry| target::normalize(&entry.target))
-            .collect(),
-    };
-    let selection_targets = map_targets(&mut mapping, &selections)?;
-    let mode = ask_mode(prompter, &source_ref)?;
-    let policy = ask_policy(prompter)?;
-    for selection_target in selection_targets {
-        let spec = NewEntry {
-            source: &source_ref,
-            item: &selection_target.item,
-            mode,
-            policy,
-        };
-        state
-            .added
-            .push(build_entry(&spec, selection_target.target));
-    }
-    Ok(())
-}
-
-/// Asks the kind of source to add.
-///
-/// Unknown labels from the prompter are rejected with
-/// [`SyncsmithError::InvalidArguments`]; this is the only place where the
-/// string labels are converted to [`SourceKind`].
-fn ask_source(prompter: &dyn Prompter) -> Result<SourceKind, SyncsmithError> {
-    let labels: Vec<String> = SourceKind::ALL
-        .iter()
-        .map(|kind| kind.name().to_string())
-        .collect();
-    let choice = prompter.select("Source type", &labels)?;
-    SourceKind::from_name(&choice).ok_or_else(|| SyncsmithError::InvalidArguments {
-        reason: format!("unknown source type `{choice}`"),
-    })
-}
-
-/// Prompts for the source location and ref based on its `kind`.
-///
-/// When `defaults` is set (a restart), the location and ref prompts are
-/// prefilled with the values from the discarded configuration.
-fn ask_source_ref(
-    prompter: &dyn Prompter,
-    kind: SourceKind,
-    defaults: Option<&SourceDefaults>,
-) -> Result<SourceRef, SyncsmithError> {
-    match kind {
-        SourceKind::GitRepository => {
-            let repository = match defaults {
-                Some(defaults) => prompter
-                    .text_with_default("Repository URL or local path", &defaults.location)?,
-                None => prompter.text("Repository URL or local path")?,
+            .collect();
+        let selection_targets = self.map_targets(&selections, &mut configured)?;
+        let mode = self.ask_mode(&source_ref)?;
+        let policy = self.ask_policy()?;
+        for selection_target in selection_targets {
+            let spec = NewEntry {
+                source: &source_ref,
+                item: &selection_target.item,
+                mode,
+                policy,
             };
-            let ref_default = defaults
-                .and_then(|defaults| defaults.git_ref.clone())
-                .unwrap_or_default();
-            let raw_ref = prompter.text_with_default(
-                "Ref (branch, tag, or commit; empty for the default branch)",
-                &ref_default,
-            )?;
-            let trimmed = raw_ref.trim();
-            let git_ref = (!trimmed.is_empty()).then(|| trimmed.to_string());
-            Ok(SourceRef::Repository {
-                repository,
-                git_ref,
-            })
+            state
+                .added
+                .push(build_entry(&spec, selection_target.target));
         }
-        SourceKind::LocalFolder => {
-            let folder = match defaults {
-                Some(defaults) => prompter.text_with_default("Folder path", &defaults.location)?,
-                None => prompter.text("Folder path")?,
-            };
-            Ok(SourceRef::Folder { folder })
+        Ok(())
+    }
+
+    /// Asks the kind of source to add.
+    ///
+    /// Unknown labels from the prompter are rejected with
+    /// [`SyncsmithError::InvalidArguments`]; this is the only place where the
+    /// string labels are converted to [`SourceKind`].
+    fn ask_source(&self) -> Result<SourceKind, SyncsmithError> {
+        let choices: Vec<Choice> = SourceKind::ALL
+            .iter()
+            .map(|kind| Choice::plain(kind.name()))
+            .collect();
+        let choice = self.prompter.select("Source type:", &choices, None)?;
+        SourceKind::from_name(&choice).ok_or_else(|| SyncsmithError::InvalidArguments {
+            reason: format!("unknown source type `{choice}`"),
+        })
+    }
+
+    /// Prompts for the source location and ref based on its `kind`.
+    ///
+    /// When `defaults` is set (a restart), the location and ref prompts are
+    /// prefilled with the values from the discarded configuration.
+    fn ask_source_ref(
+        &self,
+        kind: SourceKind,
+        defaults: Option<&SourceDefaults>,
+    ) -> Result<SourceRef, SyncsmithError> {
+        match kind {
+            SourceKind::GitRepository => {
+                let repository = match defaults {
+                    Some(defaults) => self
+                        .prompter
+                        .text_with_default("Repository URL or local path:", &defaults.location)?,
+                    None => self.prompter.text("Repository URL or local path:")?,
+                };
+                let ref_default = defaults
+                    .and_then(|defaults| defaults.git_ref.clone())
+                    .unwrap_or_default();
+                let raw_ref = self.prompter.text_with_default(
+                    "Repository reference (branch, tag, or commit; empty for the default branch):",
+                    &ref_default,
+                )?;
+                let trimmed = raw_ref.trim();
+                let git_ref = (!trimmed.is_empty()).then(|| trimmed.to_string());
+                Ok(SourceRef::Repository {
+                    repository,
+                    git_ref,
+                })
+            }
+            SourceKind::LocalFolder => {
+                let folder = match defaults {
+                    Some(defaults) => self
+                        .prompter
+                        .text_with_default("Folder path:", &defaults.location)?,
+                    None => self.prompter.text("Folder path:")?,
+                };
+                Ok(SourceRef::Folder { folder })
+            }
         }
     }
-}
 
-/// Selection loop within a source: multi-select until the user stops picking.
-fn select_items(
-    prompter: &dyn Prompter,
-    tree: &SourceTree,
-) -> Result<Vec<TreeItem>, SyncsmithError> {
-    let mut remaining = tree.items.clone();
-    let mut selected: Vec<TreeItem> = Vec::new();
-    while !remaining.is_empty() {
-        let options: Vec<String> = remaining.iter().map(label_item).collect();
-        let picks = prompter.multi_select(
-            "Select files or folders to synchronize (empty selection to finish)",
-            &options,
-        )?;
-        if picks.is_empty() {
-            break;
+    /// Single-pass selection within a source: one multi-select; covered
+    /// descendants are pruned from the selection.
+    ///
+    /// An empty pick asks whether the source should be skipped; declining
+    /// re-asks the selection.
+    fn select_items(&self, tree: &SourceTree) -> Result<Vec<TreeItem>, SyncsmithError> {
+        let options: Vec<String> = tree.items.iter().map(label_item).collect();
+        loop {
+            let picks = self
+                .prompter
+                .multi_select("Select files or folders to synchronize", &options)?;
+            if picks.is_empty() {
+                let skip = self.prompter.confirm(
+                    "No file was selected; the source will be ignored. Continue?",
+                    Some(false),
+                )?;
+                if skip {
+                    return Ok(Vec::new());
+                }
+                continue;
+            }
+            return self.resolve_picks(&picks, &options, tree);
         }
+    }
+
+    /// Maps the picked labels to tree items and prunes the ones covered by
+    /// a picked folder.
+    fn resolve_picks(
+        &self,
+        picks: &[String],
+        options: &[String],
+        tree: &SourceTree,
+    ) -> Result<Vec<TreeItem>, SyncsmithError> {
         let mut picked: Vec<TreeItem> = Vec::with_capacity(picks.len());
         for pick in picks {
-            let Some(index) = options.iter().position(|option| *option == pick) else {
+            let Some(index) = options.iter().position(|option| option == pick) else {
                 return Err(SyncsmithError::InvalidArguments {
                     reason: format!("unknown selection `{pick}`"),
                 });
             };
-            picked.push(remaining[index].clone());
+            picked.push(tree.items[index].clone());
         }
-        selected.extend(picked.iter().cloned());
-        remaining.retain(|candidate| !picked.iter().any(|p| covers(p, candidate)));
+        Ok(picked
+            .iter()
+            .enumerate()
+            .filter(|(index, candidate)| {
+                !picked
+                    .iter()
+                    .enumerate()
+                    .any(|(other, picker)| other != *index && covers(picker, candidate))
+            })
+            .map(|(_, item)| item.clone())
+            .collect())
     }
-    Ok(selected)
+
+    /// Target mapping for the selected items, validated against the entries
+    /// configured so far (`configured` grows as targets are accepted).
+    fn map_targets(
+        &self,
+        selections: &[TreeItem],
+        configured: &mut Vec<PathBuf>,
+    ) -> Result<Vec<SelectionTarget>, SyncsmithError> {
+        let mut targets = Vec::with_capacity(selections.len());
+        for item in selections {
+            let default = target::default_target(&item.relative);
+            let mut attempts = 0;
+            loop {
+                let input = self
+                    .prompter
+                    .text_with_default(&target_prompt(item), &default.to_string_lossy())?;
+                let path = PathBuf::from(input.trim());
+                let check = target::TargetCheck {
+                    target: &path,
+                    selection_is_dir: item.is_dir,
+                    configured,
+                };
+                match target::validate_target(&check, self.fs) {
+                    Ok(()) => {
+                        if target::overwrite_collision(&path, configured, self.fs) {
+                            tracing::warn!(
+                                target_path = %path.display(),
+                                "target exists and is not synchronized; `sync` may overwrite it"
+                            );
+                        }
+                        configured.push(target::normalize(&path));
+                        targets.push(SelectionTarget {
+                            item: item.clone(),
+                            target: path,
+                        });
+                        break;
+                    }
+                    Err(error) => {
+                        attempts += 1;
+                        if attempts >= MAX_INPUT_ATTEMPTS {
+                            return Err(error);
+                        }
+                        tracing::warn!("{error}");
+                    }
+                }
+            }
+        }
+        Ok(targets)
+    }
+
+    /// Asks the default mode applied to all entries from the current source.
+    ///
+    /// Folder sources are incompatible with `patch` mode (the last-synced
+    /// version of a folder cannot be recovered), so the prompt offers
+    /// `Overwrite` only for them.
+    pub(super) fn ask_mode(&self, source: &SourceRef) -> Result<Mode, SyncsmithError> {
+        let options = match source {
+            SourceRef::Folder { .. } => {
+                tracing::info!("folder sources cannot use patch mode; offering overwrite only");
+                vec![Choice::described(
+                    Mode::Overwrite.label(),
+                    "Replace the target with the source content",
+                )]
+            }
+            SourceRef::Repository { .. } => vec![
+                Choice::described(
+                    Mode::Overwrite.label(),
+                    "Replace the target with the source content",
+                ),
+                Choice::described(
+                    Mode::Patch.label(),
+                    "Apply the source changes on top of local edits",
+                ),
+            ],
+        };
+        let choice = self.prompter.select(
+            "Default mode for entries from this source:",
+            &options,
+            Some(Mode::Overwrite.label()),
+        )?;
+        Mode::from_name(&choice).ok_or_else(|| SyncsmithError::InvalidArguments {
+            reason: format!("unknown mode `{choice}`"),
+        })
+    }
+
+    /// Asks the default policy applied to all entries of the current source.
+    pub(super) fn ask_policy(&self) -> Result<Policy, SyncsmithError> {
+        let options = vec![
+            Choice::described(Policy::Automatic.label(), "Synchronized on every sync run"),
+            Choice::described(
+                Policy::Manual.label(),
+                "Synchronized only when explicitly requested",
+            ),
+        ];
+        let choice = self.prompter.select(
+            "Default policy for entries from this source:",
+            &options,
+            Some(Policy::Automatic.label()),
+        )?;
+        Policy::from_name(&choice).ok_or_else(|| SyncsmithError::InvalidArguments {
+            reason: format!("unknown policy `{choice}`"),
+        })
+    }
 }
 
 /// Whether `candidate` is made redundant by the already `picked` item.
@@ -393,63 +580,8 @@ fn label_item(item: &TreeItem) -> String {
     format!("{}{}", item.relative.to_string_lossy(), suffix)
 }
 
-/// Target mapping for the selected items, validated against the entries
-/// configured so far.
-fn map_targets(
-    mapping: &mut MappingContext,
-    selections: &[TreeItem],
-) -> Result<Vec<SelectionTarget>, SyncsmithError> {
-    let mut targets = Vec::with_capacity(selections.len());
-    for item in selections {
-        let default = target::default_target(&item.relative);
-        let mut attempts = 0;
-        loop {
-            let input = mapping
-                .prompter
-                .text_with_default(&target_prompt(item), &default.to_string_lossy())?;
-            let path = PathBuf::from(input.trim());
-            let check = target::TargetCheck {
-                target: &path,
-                selection_is_dir: item.is_dir,
-                configured: &mapping.configured,
-            };
-            match target::validate_target(&check, mapping.fs) {
-                Ok(()) => {
-                    if target::overwrite_collision(&path, &mapping.configured, mapping.fs) {
-                        tracing::warn!(
-                            target_path = %path.display(),
-                            "target exists and is not synchronized; `sync` may overwrite it"
-                        );
-                    }
-                    mapping.configured.push(target::normalize(&path));
-                    targets.push(SelectionTarget {
-                        item: item.clone(),
-                        target: path,
-                    });
-                    break;
-                }
-                Err(error) => {
-                    attempts += 1;
-                    if attempts >= MAX_INPUT_ATTEMPTS {
-                        return Err(error);
-                    }
-                    tracing::warn!("{error}");
-                }
-            }
-        }
-    }
-    Ok(targets)
-}
-
 fn target_prompt(item: &TreeItem) -> String {
-    format!("Target path for `{}`", item.relative.to_string_lossy())
-}
-
-/// Prompter, filesystem, and the target paths configured so far.
-struct MappingContext<'a> {
-    prompter: &'a dyn Prompter,
-    fs: &'a dyn FlowFs,
-    configured: Vec<PathBuf>,
+    format!("Target path for '{}':", item.relative.to_string_lossy())
 }
 
 /// A selection paired with its validated target path.
@@ -489,48 +621,11 @@ fn build_entry(spec: &NewEntry, target: PathBuf) -> SyncEntry {
     }
 }
 
-/// Asks the default mode applied to all entries from the current source.
-///
-/// Folder sources are incompatible with `patch` mode (the last-synced
-/// version of a folder cannot be recovered), so the prompt offers
-/// `overwrite` only for them.
-pub(super) fn ask_mode(
-    prompter: &dyn Prompter,
-    source: &SourceRef,
-) -> Result<Mode, SyncsmithError> {
-    let options = match source {
-        SourceRef::Folder { .. } => {
-            tracing::info!("folder sources cannot use patch mode; offering overwrite only");
-            vec![Mode::Overwrite.name().to_string()]
-        }
-        SourceRef::Repository { .. } => owned(&[Mode::Patch.name(), Mode::Overwrite.name()]),
-    };
-    let choice = prompter.select("Default mode for entries from this source", &options)?;
-    Mode::from_name(&choice).ok_or_else(|| SyncsmithError::InvalidArguments {
-        reason: format!("unknown mode `{choice}`"),
-    })
-}
-
-/// Asks the default policy applied to all entries of the current source.
-pub(super) fn ask_policy(prompter: &dyn Prompter) -> Result<Policy, SyncsmithError> {
-    let choice = prompter.select(
-        "Default policy for entries from this source",
-        &owned(&[Policy::Automatic.name(), Policy::Manual.name()]),
-    )?;
-    Policy::from_name(&choice).ok_or_else(|| SyncsmithError::InvalidArguments {
-        reason: format!("unknown policy `{choice}`"),
-    })
-}
-
-fn owned(values: &[&str]) -> Vec<String> {
-    values.iter().map(|value| value.to_string()).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        ExistingChoice, FlowFs, InitState, Prompter, SourceDefaults, SourceKind, SourceRef,
-        SourceTree, TreeItem, ask_existing, ask_source, owned, run_flow, state_for_choice,
+        Choice, ExistingChoice, Flow, FlowFs, InitState, Prompter, SourceDefaults, SourceKind,
+        SourceRef, SourceTree, TreeItem, ask_existing, state_for_choice,
     };
     use crate::config::{Mode, Policy, Source, SyncEntry};
     use crate::error::SyncsmithError;
@@ -549,24 +644,33 @@ mod tests {
         Multi(Vec<String>),
     }
 
+    /// One recorded single-choice prompt: its message, the offered labels,
+    /// and the preselected default.
+    #[derive(Debug, Clone, PartialEq)]
+    struct SelectPrompt {
+        message: String,
+        labels: Vec<String>,
+        default: Option<String>,
+    }
+
     /// Prompter replaying a scripted answer queue; an exhausted script
     /// behaves like an interruption at the prompt.
     struct ScriptedPrompter {
         answers: RefCell<VecDeque<Answer>>,
-        select_options: RefCell<Vec<Vec<String>>>,
+        select_prompts: RefCell<Vec<SelectPrompt>>,
     }
 
     impl ScriptedPrompter {
         fn new(answers: Vec<Answer>) -> Self {
             Self {
                 answers: RefCell::new(answers.into()),
-                select_options: RefCell::new(Vec::new()),
+                select_prompts: RefCell::new(Vec::new()),
             }
         }
 
-        /// The options offered by each `select` prompt, in prompt order.
-        fn select_options(&self) -> Vec<Vec<String>> {
-            self.select_options.borrow().clone()
+        /// The single-choice prompts offered by the flow, in prompt order.
+        fn select_prompts(&self) -> Vec<SelectPrompt> {
+            self.select_prompts.borrow().clone()
         }
 
         fn pop(&self) -> Option<Answer> {
@@ -575,7 +679,7 @@ mod tests {
     }
 
     impl Prompter for ScriptedPrompter {
-        fn confirm(&self, _message: &str) -> Result<bool, SyncsmithError> {
+        fn confirm(&self, _message: &str, _default: Option<bool>) -> Result<bool, SyncsmithError> {
             match self.pop() {
                 Some(Answer::Confirm(value)) => Ok(value),
                 Some(other) => panic!("unexpected answer for confirm: {other:?}"),
@@ -583,8 +687,17 @@ mod tests {
             }
         }
 
-        fn select(&self, _message: &str, options: &[String]) -> Result<String, SyncsmithError> {
-            self.select_options.borrow_mut().push(options.to_vec());
+        fn select(
+            &self,
+            message: &str,
+            options: &[Choice],
+            default: Option<&str>,
+        ) -> Result<String, SyncsmithError> {
+            self.select_prompts.borrow_mut().push(SelectPrompt {
+                message: message.to_string(),
+                labels: options.iter().map(|option| option.label.clone()).collect(),
+                default: default.map(str::to_string),
+            });
             match self.pop() {
                 Some(Answer::Select(value)) => Ok(value),
                 Some(other) => panic!("unexpected answer for select: {other:?}"),
@@ -656,6 +769,14 @@ mod tests {
         }
     }
 
+    fn run_flow(
+        prompter: &ScriptedPrompter,
+        fs: &ScriptedFs,
+        state: &mut InitState,
+    ) -> Result<Vec<SyncEntry>, SyncsmithError> {
+        Flow::new(prompter, fs).run(state)
+    }
+
     fn file(relative: &str) -> TreeItem {
         TreeItem {
             relative: PathBuf::from(relative),
@@ -703,26 +824,25 @@ mod tests {
         };
         let prompter = ScriptedPrompter::new(vec![
             Answer::Confirm(true),
-            Answer::Select("local folder".into()),
+            Answer::Select("Local folder".into()),
             Answer::Text("rules".into()),
             Answer::Multi(vec!["a.yml".into()]),
-            Answer::Multi(vec![]),
             Answer::TextDefault("a.yml".into()),
-            Answer::Select("overwrite".into()),
-            Answer::Select("automatic".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
             Answer::Confirm(true),
-            Answer::Select("git repository".into()),
+            Answer::Select("Git repository".into()),
             Answer::Text("https://example.com/rules.git".into()),
             Answer::TextDefault(String::new()),
             Answer::Multi(vec!["lints/base.yml".into()]),
             Answer::TextDefault("lints/base.yml".into()),
-            Answer::Select("overwrite".into()),
-            Answer::Select("manual".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Manual".into()),
             Answer::Confirm(false),
-            Answer::Select("confirm".into()),
+            Answer::Select("Validate".into()),
         ]);
         let mut state = InitState::default();
-        let entries = run_flow(&mut state, &prompter, &fs).expect("flow completes");
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
         assert_eq!(
             entries,
             vec![
@@ -755,11 +875,11 @@ mod tests {
         };
         let prompter = ScriptedPrompter::new(vec![
             Answer::Confirm(true),
-            Answer::Select("local folder".into()),
+            Answer::Select("Local folder".into()),
             Answer::Text("rules".into()),
         ]);
         let mut state = InitState::default();
-        let result = run_flow(&mut state, &prompter, &fs);
+        let result = run_flow(&prompter, &fs, &mut state);
         assert!(matches!(result, Err(SyncsmithError::Aborted)));
         assert!(state.added.is_empty());
     }
@@ -774,23 +894,22 @@ mod tests {
         };
         let prompter = ScriptedPrompter::new(vec![
             Answer::Confirm(true),
-            Answer::Select("local folder".into()),
+            Answer::Select("Local folder".into()),
             Answer::Text("rules".into()),
             Answer::Multi(vec!["a.yml".into()]),
-            Answer::Multi(vec![]),
             Answer::TextDefault("a.yml".into()),
             Answer::TextDefault("renamed.yml".into()),
-            Answer::Select("overwrite".into()),
-            Answer::Select("automatic".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
             Answer::Confirm(false),
-            Answer::Select("confirm".into()),
+            Answer::Select("Validate".into()),
         ]);
         let mut state = InitState {
             existing: vec![existing_entry("a.yml")],
             added: Vec::new(),
             source_defaults: None,
         };
-        let entries = run_flow(&mut state, &prompter, &fs).expect("flow completes");
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
         assert_eq!(entries[0], existing_entry("a.yml"));
         assert_eq!(entries[1].target, PathBuf::from("renamed.yml"));
     }
@@ -810,21 +929,21 @@ mod tests {
         });
         let prompter = ScriptedPrompter::new(vec![
             Answer::Confirm(true),
-            Answer::Select("local folder".into()),
+            Answer::Select("Local folder".into()),
             Answer::Text("rules".into()),
             Answer::Multi(vec!["a.yml".into()]),
             Answer::TextDefault("a.yml".into()),
-            Answer::Select("overwrite".into()),
-            Answer::Select("automatic".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
             Answer::Confirm(false),
-            Answer::Select("edit entry".into()),
+            Answer::Select("Edit entry".into()),
             Answer::Select(label),
             Answer::Select("target".into()),
             Answer::TextDefault("renamed.yml".into()),
-            Answer::Select("confirm".into()),
+            Answer::Select("Validate".into()),
         ]);
         let mut state = InitState::default();
-        let entries = run_flow(&mut state, &prompter, &fs).expect("flow completes");
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].target, PathBuf::from("renamed.yml"));
     }
@@ -844,19 +963,96 @@ mod tests {
         });
         let prompter = ScriptedPrompter::new(vec![
             Answer::Confirm(true),
-            Answer::Select("local folder".into()),
+            Answer::Select("Local folder".into()),
             Answer::Text("rules".into()),
             Answer::Multi(vec!["a.yml".into()]),
             Answer::TextDefault("a.yml".into()),
-            Answer::Select("overwrite".into()),
-            Answer::Select("automatic".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
             Answer::Confirm(false),
-            Answer::Select("remove entry".into()),
+            Answer::Select("Remove entry".into()),
             Answer::Select(label),
         ]);
         let mut state = InitState::default();
-        let entries = run_flow(&mut state, &prompter, &fs).expect("flow completes");
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn review_add_another_entry_appends_entries() {
+        let fs = ScriptedFs {
+            trees: HashMap::from([
+                ("rules".to_string(), tree(vec![file("a.yml")])),
+                ("other".to_string(), tree(vec![file("b.yml")])),
+            ]),
+        };
+        // After `Add another entry`, the full add-source flow (type,
+        // location, selection, target, mode, policy) is replayed and the
+        // review loop asks for an action again.
+        let prompter = ScriptedPrompter::new(vec![
+            Answer::Confirm(true),
+            Answer::Select("Local folder".into()),
+            Answer::Text("rules".into()),
+            Answer::Multi(vec!["a.yml".into()]),
+            Answer::TextDefault("a.yml".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
+            Answer::Confirm(false),
+            Answer::Select("Add another entry".into()),
+            Answer::Select("Local folder".into()),
+            Answer::Text("other".into()),
+            Answer::Multi(vec!["b.yml".into()]),
+            Answer::TextDefault("b.yml".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
+            Answer::Select("Validate".into()),
+        ]);
+        let mut state = InitState::default();
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
+        assert_eq!(
+            entries,
+            vec![
+                SyncEntry {
+                    source: Source::Folder {
+                        folder: PathBuf::from("rules/a.yml"),
+                    },
+                    target: "a.yml".into(),
+                    mode: Mode::Overwrite,
+                    policy: Policy::Automatic,
+                },
+                SyncEntry {
+                    source: Source::Folder {
+                        folder: PathBuf::from("other/b.yml"),
+                    },
+                    target: "b.yml".into(),
+                    mode: Mode::Overwrite,
+                    policy: Policy::Automatic,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn review_validate_ends_the_loop() {
+        let fs = ScriptedFs {
+            trees: HashMap::from([("rules".to_string(), tree(vec![file("a.yml")]))]),
+        };
+        // The script ends at `Validate`: a further review prompt would
+        // exhaust the script and surface as an abort.
+        let prompter = ScriptedPrompter::new(vec![
+            Answer::Confirm(true),
+            Answer::Select("Local folder".into()),
+            Answer::Text("rules".into()),
+            Answer::Multi(vec!["a.yml".into()]),
+            Answer::TextDefault("a.yml".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
+            Answer::Confirm(false),
+            Answer::Select("Validate".into()),
+        ]);
+        let mut state = InitState::default();
+        let entries = run_flow(&prompter, &fs, &mut state).expect("validate ends the loop");
+        assert_eq!(entries.len(), 1);
     }
 
     #[test]
@@ -866,13 +1062,70 @@ mod tests {
         };
         let prompter = ScriptedPrompter::new(vec![
             Answer::Confirm(true),
-            Answer::Select("local folder".into()),
+            Answer::Select("Local folder".into()),
             Answer::Text("empty".into()),
             Answer::Confirm(false),
         ]);
         let mut state = InitState::default();
-        let entries = run_flow(&mut state, &prompter, &fs).expect("flow completes");
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn empty_selection_confirmed_skips_the_source() {
+        let fs = ScriptedFs {
+            trees: HashMap::from([("rules".to_string(), tree(vec![file("a.yml")]))]),
+        };
+        // Multi(empty) then Confirm(true): the skip confirmation is
+        // accepted, so no entry is created and no further selection prompt
+        // happens (the script would be exhausted otherwise).
+        let prompter = ScriptedPrompter::new(vec![
+            Answer::Confirm(true),
+            Answer::Select("Local folder".into()),
+            Answer::Text("rules".into()),
+            Answer::Multi(Vec::new()),
+            Answer::Confirm(true),
+            Answer::Confirm(false),
+        ]);
+        let mut state = InitState::default();
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn empty_selection_declined_reasks_the_selection() {
+        let fs = ScriptedFs {
+            trees: HashMap::from([("rules".to_string(), tree(vec![file("a.yml")]))]),
+        };
+        // Multi(empty) then Confirm(false): the skip is declined, so the
+        // next answer must be the re-asked multi-select; picking `a.yml`
+        // there must produce its entry.
+        let prompter = ScriptedPrompter::new(vec![
+            Answer::Confirm(true),
+            Answer::Select("Local folder".into()),
+            Answer::Text("rules".into()),
+            Answer::Multi(Vec::new()),
+            Answer::Confirm(false),
+            Answer::Multi(vec!["a.yml".into()]),
+            Answer::TextDefault("a.yml".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
+            Answer::Confirm(false),
+            Answer::Select("Validate".into()),
+        ]);
+        let mut state = InitState::default();
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
+        assert_eq!(
+            entries,
+            vec![SyncEntry {
+                source: Source::Folder {
+                    folder: PathBuf::from("rules/a.yml"),
+                },
+                target: "a.yml".into(),
+                mode: Mode::Overwrite,
+                policy: Policy::Automatic,
+            }]
+        );
     }
 
     #[test]
@@ -885,17 +1138,54 @@ mod tests {
         };
         let prompter = ScriptedPrompter::new(vec![
             Answer::Confirm(true),
-            Answer::Select("local folder".into()),
+            Answer::Select("Local folder".into()),
             Answer::Text("rules".into()),
             Answer::Multi(vec!["lints (folder)".into()]),
             Answer::TextDefault("lints".into()),
-            Answer::Select("overwrite".into()),
-            Answer::Select("automatic".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
             Answer::Confirm(false),
-            Answer::Select("confirm".into()),
+            Answer::Select("Validate".into()),
         ]);
         let mut state = InitState::default();
-        let entries = run_flow(&mut state, &prompter, &fs).expect("flow completes");
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
+        assert_eq!(
+            entries,
+            vec![SyncEntry {
+                source: Source::Folder {
+                    folder: PathBuf::from("rules/lints"),
+                },
+                target: "lints".into(),
+                mode: Mode::Overwrite,
+                policy: Policy::Automatic,
+            }]
+        );
+    }
+
+    #[test]
+    fn simultaneous_folder_and_descendant_picks_prune_the_descendant() {
+        let fs = ScriptedFs {
+            trees: HashMap::from([(
+                "rules".to_string(),
+                tree(vec![folder("lints"), file("lints/base.yml")]),
+            )]),
+        };
+        // Picking both the folder and its descendant in one pass keeps only
+        // the folder: a single target prompt must follow (a second one
+        // would exhaust the script).
+        let prompter = ScriptedPrompter::new(vec![
+            Answer::Confirm(true),
+            Answer::Select("Local folder".into()),
+            Answer::Text("rules".into()),
+            Answer::Multi(vec!["lints (folder)".into(), "lints/base.yml".into()]),
+            Answer::TextDefault("lints".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
+            Answer::Confirm(false),
+            Answer::Select("Validate".into()),
+        ]);
+        let mut state = InitState::default();
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
         assert_eq!(
             entries,
             vec![SyncEntry {
@@ -916,22 +1206,22 @@ mod tests {
         };
         let prompter = ScriptedPrompter::new(vec![
             Answer::Confirm(true),
-            Answer::Select("local folder".into()),
+            Answer::Select("Local folder".into()),
             Answer::Text("rules".into()),
             Answer::Multi(vec!["a.yml".into()]),
             Answer::TextDefault("a.yml".into()),
-            Answer::Select("overwrite".into()),
-            Answer::Select("automatic".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
             Answer::Confirm(false),
-            Answer::Select("confirm".into()),
+            Answer::Select("Validate".into()),
         ]);
         let mut state = InitState::default();
-        let entries = run_flow(&mut state, &prompter, &fs).expect("flow completes");
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
         // Select prompts in order: source type, mode, policy, review.
-        let options = prompter.select_options();
+        let prompts = prompter.select_prompts();
         assert_eq!(
-            options.get(1),
-            Some(&vec!["overwrite".to_string()]),
+            prompts.get(1).map(|prompt| prompt.labels.clone()),
+            Some(vec!["Overwrite".to_string()]),
             "the mode prompt must offer overwrite only for folder sources"
         );
         assert_eq!(
@@ -957,26 +1247,96 @@ mod tests {
         };
         let prompter = ScriptedPrompter::new(vec![
             Answer::Confirm(true),
-            Answer::Select("git repository".into()),
+            Answer::Select("Git repository".into()),
             Answer::Text("https://example.com/rules.git".into()),
             Answer::TextDefault(String::new()),
             Answer::Multi(vec!["lints/base.yml".into()]),
             Answer::TextDefault("lints/base.yml".into()),
-            Answer::Select("patch".into()),
-            Answer::Select("automatic".into()),
+            Answer::Select("Patch".into()),
+            Answer::Select("Automatic".into()),
             Answer::Confirm(false),
-            Answer::Select("confirm".into()),
+            Answer::Select("Validate".into()),
         ]);
         let mut state = InitState::default();
-        let entries = run_flow(&mut state, &prompter, &fs).expect("flow completes");
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
         assert_eq!(entries[0].mode, Mode::Patch);
         // Select prompts in order: source type, mode, policy, review.
-        let options = prompter.select_options();
+        let prompts = prompter.select_prompts();
         assert_eq!(
-            options.get(1),
-            Some(&vec!["patch".to_string(), "overwrite".to_string()]),
+            prompts.get(1).map(|prompt| prompt.labels.clone()),
+            Some(vec!["Overwrite".to_string(), "Patch".to_string()]),
             "the mode prompt must offer both modes for git sources"
         );
+    }
+
+    #[test]
+    fn mode_prompt_defaults_to_overwrite() {
+        let fs = ScriptedFs {
+            trees: HashMap::from([
+                (
+                    "https://example.com/rules.git".to_string(),
+                    tree(vec![file("lints/base.yml")]),
+                ),
+                ("rules".to_string(), tree(vec![file("a.yml")])),
+            ]),
+        };
+        // One git source then one folder source; the mode prompts are the
+        // select prompts at index 1 and 4 (each source asks type, mode,
+        // policy, in that order).
+        let prompter = ScriptedPrompter::new(vec![
+            Answer::Confirm(true),
+            Answer::Select("Git repository".into()),
+            Answer::Text("https://example.com/rules.git".into()),
+            Answer::TextDefault(String::new()),
+            Answer::Multi(vec!["lints/base.yml".into()]),
+            Answer::TextDefault("lints/base.yml".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
+            Answer::Confirm(true),
+            Answer::Select("Local folder".into()),
+            Answer::Text("rules".into()),
+            Answer::Multi(vec!["a.yml".into()]),
+            Answer::TextDefault("a.yml".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
+            Answer::Confirm(false),
+            Answer::Select("Validate".into()),
+        ]);
+        let mut state = InitState::default();
+        run_flow(&prompter, &fs, &mut state).expect("flow completes");
+        let prompts = prompter.select_prompts();
+        let git_mode = prompts.get(1).expect("the git mode prompt is recorded");
+        assert_eq!(git_mode.default.as_deref(), Some("Overwrite"));
+        assert_eq!(git_mode.labels, vec!["Overwrite", "Patch"]);
+        let folder_mode = prompts.get(4).expect("the folder mode prompt is recorded");
+        assert_eq!(folder_mode.default.as_deref(), Some("Overwrite"));
+        assert_eq!(folder_mode.labels, vec!["Overwrite"]);
+    }
+
+    #[test]
+    fn policy_prompt_defaults_to_automatic() {
+        let fs = ScriptedFs {
+            trees: HashMap::from([("rules".to_string(), tree(vec![file("a.yml")]))]),
+        };
+        // The policy prompt is the select prompt at index 2 (source type,
+        // mode, policy, in that order).
+        let prompter = ScriptedPrompter::new(vec![
+            Answer::Confirm(true),
+            Answer::Select("Local folder".into()),
+            Answer::Text("rules".into()),
+            Answer::Multi(vec!["a.yml".into()]),
+            Answer::TextDefault("a.yml".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
+            Answer::Confirm(false),
+            Answer::Select("Validate".into()),
+        ]);
+        let mut state = InitState::default();
+        run_flow(&prompter, &fs, &mut state).expect("flow completes");
+        let prompts = prompter.select_prompts();
+        let policy = prompts.get(2).expect("the policy prompt is recorded");
+        assert_eq!(policy.default.as_deref(), Some("Automatic"));
+        assert_eq!(policy.labels, vec!["Automatic", "Manual"]);
     }
 
     #[test]
@@ -1008,15 +1368,15 @@ mod tests {
         };
         let prompter = ScriptedPrompter::new(vec![
             Answer::Confirm(true),
-            Answer::Select("local folder".into()),
+            Answer::Select("Local folder".into()),
             // The location prompt carries a default after a restart.
             Answer::TextDefault("newrules".into()),
             Answer::Multi(vec!["a.yml".into()]),
             Answer::TextDefault("a.yml".into()),
-            Answer::Select("overwrite".into()),
-            Answer::Select("automatic".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
             Answer::Confirm(false),
-            Answer::Select("confirm".into()),
+            Answer::Select("Validate".into()),
         ]);
         let discarded = SyncEntry {
             source: Source::Folder {
@@ -1028,7 +1388,7 @@ mod tests {
         };
         let mut state =
             state_for_choice(ExistingChoice::Restart, vec![discarded]).expect("valid choice");
-        let entries = run_flow(&mut state, &prompter, &fs).expect("flow completes");
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].source,
@@ -1046,7 +1406,7 @@ mod tests {
 
     #[test]
     fn ask_existing_maps_choices() {
-        let prompter = ScriptedPrompter::new(vec![Answer::Select("restart".into())]);
+        let prompter = ScriptedPrompter::new(vec![Answer::Select("Restart".into())]);
         assert_eq!(
             ask_existing(&prompter).expect("valid choice"),
             ExistingChoice::Restart
@@ -1055,32 +1415,35 @@ mod tests {
 
     #[test]
     fn ask_source_maps_choices() {
+        let fs = ScriptedFs {
+            trees: HashMap::new(),
+        };
         let prompter = ScriptedPrompter::new(vec![
-            Answer::Select("git repository".into()),
-            Answer::Select("local folder".into()),
+            Answer::Select("Git repository".into()),
+            Answer::Select("Local folder".into()),
         ]);
+        let flow = Flow::new(&prompter, &fs);
         assert_eq!(
-            ask_source(&prompter).expect("valid choice"),
+            flow.ask_source().expect("valid choice"),
             SourceKind::GitRepository
         );
         assert_eq!(
-            ask_source(&prompter).expect("valid choice"),
+            flow.ask_source().expect("valid choice"),
             SourceKind::LocalFolder
         );
     }
 
     #[test]
     fn ask_source_rejects_unknown_choice() {
+        let fs = ScriptedFs {
+            trees: HashMap::new(),
+        };
         let prompter = ScriptedPrompter::new(vec![Answer::Select("submodule".into())]);
-        let result = ask_source(&prompter);
+        let flow = Flow::new(&prompter, &fs);
+        let result = flow.ask_source();
         assert!(matches!(
             result,
             Err(SyncsmithError::InvalidArguments { .. })
         ));
-    }
-
-    #[test]
-    fn owned_converts_str_slices() {
-        assert_eq!(owned(&["a", "b"]), vec!["a".to_string(), "b".to_string()]);
     }
 }

@@ -19,7 +19,7 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// Lowercase name used in prompts and in the configuration file.
+    /// Lowercase name used in the configuration file.
     pub fn name(&self) -> &'static str {
         match self {
             Mode::Patch => "patch",
@@ -27,11 +27,19 @@ impl Mode {
         }
     }
 
+    /// Capitalized label used in interactive prompts.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Mode::Patch => "Patch",
+            Mode::Overwrite => "Overwrite",
+        }
+    }
+
     /// Parses the names accepted by the interactive flow.
     pub fn from_name(name: &str) -> Option<Mode> {
         match name {
-            "patch" => Some(Mode::Patch),
-            "overwrite" => Some(Mode::Overwrite),
+            "patch" | "Patch" => Some(Mode::Patch),
+            "overwrite" | "Overwrite" => Some(Mode::Overwrite),
             _ => None,
         }
     }
@@ -48,7 +56,7 @@ pub enum Policy {
 }
 
 impl Policy {
-    /// Lowercase name used in prompts and in the configuration file.
+    /// Lowercase name used in the configuration file.
     pub fn name(&self) -> &'static str {
         match self {
             Policy::Automatic => "automatic",
@@ -56,11 +64,19 @@ impl Policy {
         }
     }
 
+    /// Capitalized label used in interactive prompts.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Policy::Automatic => "Automatic",
+            Policy::Manual => "Manual",
+        }
+    }
+
     /// Parses the names accepted by the interactive flow.
     pub fn from_name(name: &str) -> Option<Policy> {
         match name {
-            "automatic" => Some(Policy::Automatic),
-            "manual" => Some(Policy::Manual),
+            "automatic" | "Automatic" => Some(Policy::Automatic),
+            "manual" | "Manual" => Some(Policy::Manual),
             _ => None,
         }
     }

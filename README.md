@@ -29,11 +29,11 @@ cargo test               # run the test suite
 
 Interactive setup of the configuration file:
 
-1. Resolve the configuration path (see `--config` below). If a configuration already exists, choose **add** (keep existing entries and append new ones), **restart** (discard the entries and start fresh — the most recent discarded entry prefills the source-location and ref prompts), or **abort**.
-2. For each source (git repository or local folder): browse its content — remote repositories are shallow-cloned (depth 1, pinned ref) into a temporary directory — and select the files or folders to synchronize.
+1. Resolve the configuration path (see `--config` below). If a configuration already exists, choose **Add** (keep existing entries and append new ones), **Restart** (discard the entries and start fresh — the most recent discarded entry prefills the source-location and ref prompts), or **Abort**.
+2. For each source (git repository or local folder): browse its content — remote repositories are shallow-cloned (depth 1, pinned ref) into a temporary directory — and select the files or folders to synchronize in a single pass (a picked folder subsumes its descendants). An empty selection asks for confirmation before the source is skipped; declining re-asks the selection.
 3. Map each selection to a target path inside the target repository (default: the selection's path relative to the source root), validated for containment, duplicates, and file/folder coherence.
-4. Pick a default mode (`patch` or `overwrite`) and policy (`automatic` or `manual`) applied to all entries from that source.
-5. Review the entry table; edit (target, mode, policy) or remove entries.
+4. Pick a default mode (`overwrite` by default; `patch` only for git sources) and policy (`automatic` by default) applied to all entries from that source; each option carries a one-line description.
+5. Review the synchronization summary (one green `source -> target` line per entry, with its mode and policy); validate it, edit an entry (target, mode, policy), remove an entry, or add another entry (which replays the full source flow and reprints the summary).
 6. On confirmation, write `.syncsmith.toml` atomically.
 7. Optionally install a pre-commit hook that runs `syncsmith sync` (honoring `core.hooksPath`; an existing hook is never overwritten without confirmation).
 

@@ -7,7 +7,7 @@ mod review;
 mod source_loader;
 pub(crate) mod target;
 
-pub use flow::{ExistingChoice, FlowFs, InitState, Prompter};
+pub use flow::{Choice, ExistingChoice, Flow, FlowFs, InitState, Prompter};
 pub use prompts::InquirePrompter;
 pub use source_loader::{SourceLoader, SourceRef, SourceTree, TreeItem};
 pub use target::{TargetCheck, TargetFs};
@@ -61,11 +61,15 @@ pub fn run_with(prompter: &dyn Prompter, global: &GlobalArgs) -> Result<ExitStat
     let target_root = repo_root.clone().unwrap_or_else(|| config_dir.clone());
     let loader = SourceLoader::new(config_dir.clone(), target_root.clone());
 
-    let entries = flow::run_flow(&mut state, prompter, &loader)?;
+    let flow = flow::Flow::new(prompter, &loader);
+    let entries = flow.run(&mut state)?;
     // GOTCHA: an empty configuration (no entries) is only written after this
     // explicit confirmation; declining aborts before any write.
     if entries.is_empty()
-        && !prompter.confirm("The configuration has no entries. Write it anyway?")?
+        && !prompter.confirm(
+            "The configuration has no entries. Write it anyway?",
+            Some(false),
+        )?
     {
         return Err(SyncsmithError::Aborted);
     }

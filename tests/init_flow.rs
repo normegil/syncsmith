@@ -83,16 +83,16 @@ fn run_with_writes_mirrored_folder_targets_and_exits_success() {
 
     let prompter = ScriptedPrompter::new(vec![
         Answer::Confirm(true),
-        Answer::Select("local folder".into()),
+        Answer::Select("Local folder".into()),
         Answer::Text(entered.clone()),
         Answer::Multi(vec!["a.yml".into(), "lints (folder)".into()]),
         Answer::TextDefault("a.yml".into()),
         Answer::TextDefault("lints".into()),
         // Folder sources only offer overwrite mode.
-        Answer::Select("overwrite".into()),
-        Answer::Select("automatic".into()),
+        Answer::Select("Overwrite".into()),
+        Answer::Select("Automatic".into()),
         Answer::Confirm(false),
-        Answer::Select("confirm".into()),
+        Answer::Select("Validate".into()),
         Answer::Confirm(false),
     ]);
 
@@ -155,16 +155,16 @@ fn run_with_add_choice_appends_entries_and_installs_the_hook() {
     let _cwd = enter(repo.path());
 
     let prompter = ScriptedPrompter::new(vec![
-        Answer::Select("add".into()),
+        Answer::Select("Add".into()),
         Answer::Confirm(true),
-        Answer::Select("local folder".into()),
+        Answer::Select("Local folder".into()),
         Answer::Text(entered.clone()),
         Answer::Multi(vec!["b.yml".into()]),
         Answer::TextDefault("b.yml".into()),
-        Answer::Select("overwrite".into()),
-        Answer::Select("manual".into()),
+        Answer::Select("Overwrite".into()),
+        Answer::Select("Manual".into()),
         Answer::Confirm(false),
-        Answer::Select("confirm".into()),
+        Answer::Select("Validate".into()),
         Answer::Confirm(true),
     ]);
 
@@ -215,19 +215,19 @@ fn run_with_restart_choice_replaces_existing_entries() {
     let _cwd = enter(repo.path());
 
     let prompter = ScriptedPrompter::new(vec![
-        Answer::Select("restart".into()),
+        Answer::Select("Restart".into()),
         Answer::Confirm(true),
-        Answer::Select("local folder".into()),
+        Answer::Select("Local folder".into()),
         // After a restart the location prompt is prefilled with the last
         // existing entry's source ("rules" here).
         Answer::TextDefault("source".into()),
         Answer::Multi(vec!["c.yml".into()]),
         Answer::TextDefault("c.yml".into()),
         // Folder sources only offer overwrite mode.
-        Answer::Select("overwrite".into()),
-        Answer::Select("automatic".into()),
+        Answer::Select("Overwrite".into()),
+        Answer::Select("Automatic".into()),
         Answer::Confirm(false),
-        Answer::Select("confirm".into()),
+        Answer::Select("Validate".into()),
         Answer::Confirm(false),
     ]);
 
@@ -265,7 +265,7 @@ fn run_with_abort_choice_leaves_the_existing_configuration_unchanged() {
         .expect("existing configuration is written");
     let _cwd = enter(repo.path());
 
-    let prompter = ScriptedPrompter::new(vec![Answer::Select("abort".into())]);
+    let prompter = ScriptedPrompter::new(vec![Answer::Select("Abort".into())]);
 
     let result = run_with(
         &prompter,
@@ -321,16 +321,16 @@ fn run_with_reprompts_until_the_target_stays_inside_the_repository() {
 
     let prompter = ScriptedPrompter::new(vec![
         Answer::Confirm(true),
-        Answer::Select("local folder".into()),
+        Answer::Select("Local folder".into()),
         Answer::Text(entered.clone()),
         Answer::Multi(vec!["x.yml".into()]),
         Answer::TextDefault("../escape.yml".into()),
         Answer::TextDefault("renamed.yml".into()),
         // Folder sources only offer overwrite mode.
-        Answer::Select("overwrite".into()),
-        Answer::Select("automatic".into()),
+        Answer::Select("Overwrite".into()),
+        Answer::Select("Automatic".into()),
         Answer::Confirm(false),
-        Answer::Select("confirm".into()),
+        Answer::Select("Validate".into()),
         Answer::Confirm(false),
     ]);
 
@@ -413,7 +413,7 @@ fn run_with_restart_declining_an_empty_config_keeps_the_original_configuration()
     // Restart discards the entries; declining to re-add a source leaves an
     // empty configuration, which the user then declines to write.
     let prompter = ScriptedPrompter::new(vec![
-        Answer::Select("restart".into()),
+        Answer::Select("Restart".into()),
         Answer::Confirm(false),
         Answer::Confirm(false),
     ]);
@@ -492,17 +492,17 @@ policy = "manual"
     // prefilled from the discarded git entry; accepting both defaults (the
     // answers below) replays its repository and ref.
     let prompter = ScriptedPrompter::new(vec![
-        Answer::Select("restart".into()),
+        Answer::Select("Restart".into()),
         Answer::Confirm(true),
-        Answer::Select("git repository".into()),
+        Answer::Select("Git repository".into()),
         Answer::TextDefault(entered.clone()),
         Answer::TextDefault("stable".into()),
         Answer::Multi(vec!["kept.yml".into()]),
         Answer::TextDefault("kept.yml".into()),
-        Answer::Select("overwrite".into()),
-        Answer::Select("automatic".into()),
+        Answer::Select("Overwrite".into()),
+        Answer::Select("Automatic".into()),
         Answer::Confirm(false),
-        Answer::Select("confirm".into()),
+        Answer::Select("Validate".into()),
         Answer::Confirm(false),
     ]);
 
@@ -526,7 +526,8 @@ policy = "manual"
     assert!(
         defaults
             .iter()
-            .any(|(message, default)| default.as_str() == "stable" && message.contains("Ref"))
+            .any(|(message, default)| default.as_str() == "stable"
+                && message.contains("Repository reference"))
     );
     assert_eq!(
         load_written_config(repo.path()).sync,
@@ -540,6 +541,141 @@ policy = "manual"
             mode: Mode::Overwrite,
             policy: Policy::Automatic,
         }]
+    );
+}
+
+#[test]
+fn run_with_empty_selection_continue_skips_the_source() {
+    let _lock = CWD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let repo = target_repository();
+    let skipped = TempDir::new().expect("temporary skipped source is created");
+    write_source_file(skipped.path(), "a.yml", "alpha");
+    let kept = TempDir::new().expect("temporary kept source is created");
+    write_source_file(kept.path(), "b.yml", "bravo");
+    let skipped_entered = folder_source(skipped.path());
+    let kept_entered = folder_source(kept.path());
+    let _cwd = enter(repo.path());
+
+    // Multi(empty) then Confirm(true): the first source is skipped; the
+    // second source is added normally, so only its entry is written.
+    let prompter = ScriptedPrompter::new(vec![
+        Answer::Confirm(true),
+        Answer::Select("Local folder".into()),
+        Answer::Text(skipped_entered),
+        Answer::Multi(Vec::new()),
+        Answer::Confirm(true),
+        Answer::Confirm(true),
+        Answer::Select("Local folder".into()),
+        Answer::Text(kept_entered.clone()),
+        Answer::Multi(vec!["b.yml".into()]),
+        Answer::TextDefault("b.yml".into()),
+        Answer::Select("Overwrite".into()),
+        Answer::Select("Automatic".into()),
+        Answer::Confirm(false),
+        Answer::Select("Validate".into()),
+        Answer::Confirm(false),
+    ]);
+
+    let state = run_with(
+        &prompter,
+        &GlobalArgs {
+            config: None,
+            verbose: 0,
+            json: false,
+        },
+    )
+    .expect("init completes with the kept source");
+
+    assert_eq!(state, ExitState::Completed);
+    assert_eq!(
+        load_written_config(repo.path()).sync,
+        vec![SyncEntry {
+            source: Source::Folder {
+                folder: PathBuf::from(kept_entered.as_str()).join("b.yml"),
+            },
+            target: "b.yml".into(),
+            mode: Mode::Overwrite,
+            policy: Policy::Automatic,
+        }]
+    );
+}
+
+#[test]
+fn run_with_review_add_another_entry_writes_both_sources() {
+    let _lock = CWD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let repo = target_repository();
+    let source = TempDir::new().expect("temporary source folder is created");
+    write_source_file(source.path(), "a.yml", "alpha");
+    write_source_file(source.path(), "b.yml", "bravo");
+    let entered = folder_source(source.path());
+    let _cwd = enter(repo.path());
+
+    // After the first source, the review action `Add another entry` runs
+    // the full add-source flow again before `Validate` ends the loop.
+    let prompter = ScriptedPrompter::new(vec![
+        Answer::Confirm(true),
+        Answer::Select("Local folder".into()),
+        Answer::Text(entered.clone()),
+        Answer::Multi(vec!["a.yml".into()]),
+        Answer::TextDefault("a.yml".into()),
+        Answer::Select("Overwrite".into()),
+        Answer::Select("Automatic".into()),
+        Answer::Confirm(false),
+        Answer::Select("Add another entry".into()),
+        Answer::Select("Local folder".into()),
+        Answer::Text(entered.clone()),
+        Answer::Multi(vec!["b.yml".into()]),
+        Answer::TextDefault("b.yml".into()),
+        Answer::Select("Overwrite".into()),
+        Answer::Select("Automatic".into()),
+        Answer::Select("Validate".into()),
+        Answer::Confirm(false),
+    ]);
+
+    let state = run_with(
+        &prompter,
+        &GlobalArgs {
+            config: None,
+            verbose: 0,
+            json: false,
+        },
+    )
+    .expect("init completes with both sources");
+
+    assert_eq!(state, ExitState::Completed);
+    assert_eq!(
+        load_written_config(repo.path()).sync,
+        vec![
+            SyncEntry {
+                source: Source::Folder {
+                    folder: PathBuf::from(entered.as_str()).join("a.yml"),
+                },
+                target: "a.yml".into(),
+                mode: Mode::Overwrite,
+                policy: Policy::Automatic,
+            },
+            SyncEntry {
+                source: Source::Folder {
+                    folder: PathBuf::from(entered.as_str()).join("b.yml"),
+                },
+                target: "b.yml".into(),
+                mode: Mode::Overwrite,
+                policy: Policy::Automatic,
+            },
+        ]
+    );
+    // The final synchronization ran both automatic entries.
+    assert_eq!(
+        fs::read_to_string(repo.path().join("a.yml")).expect("synchronized target is readable"),
+        "alpha"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("b.yml")).expect("synchronized target is readable"),
+        "bravo"
     );
 }
 

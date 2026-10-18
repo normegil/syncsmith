@@ -37,13 +37,18 @@ pub fn offer_install(
         tracing::info!("not inside a git repository; skipping pre-commit hook installation");
         return Ok(());
     };
-    if !prompter.confirm("Install a pre-commit hook that runs `syncsmith sync`?")? {
+    if !prompter.confirm(
+        "Install a pre-commit hook that runs 'syncsmith sync'?",
+        Some(true),
+    )? {
         tracing::info!("pre-commit hook installation declined");
         return Ok(());
     }
     let hooks_dir = git::hooks_path(root)?;
     let hook_path = hooks_dir.join(HOOK_FILE_NAME);
-    if hook_path.exists() && !prompter.confirm("A pre-commit hook already exists; overwrite it?")? {
+    if hook_path.exists()
+        && !prompter.confirm("A pre-commit hook already exists; overwrite it?", None)?
+    {
         tracing::info!("leaving the existing pre-commit hook untouched");
         return Ok(());
     }
