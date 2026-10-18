@@ -39,12 +39,8 @@ pub fn run(global: &GlobalArgs) -> Result<ExitState, SyncsmithError> {
 ///
 /// Steps: resolve the configuration path, offer Add/Restart/Abort when a
 /// config exists, run the interactive flow, write the file atomically, offer
-/// the pre-commit hook, and call the sync entry point.
-///
-/// NOTE: a [`SyncsmithError::SyncNotImplemented`] from the sync entry point
-/// is reported as a stderr warning and `init` still exits 0 — until `sync`
-/// is implemented, a successful `init` means "configuration written", not
-/// "files synchronized".
+/// the pre-commit hook, and run the final synchronization of the automatic
+/// entries with the shared report writer.
 pub fn run_with(prompter: &dyn Prompter, global: &GlobalArgs) -> Result<ExitState, SyncsmithError> {
     let resolution = discovery::resolve_config_path(global)?;
     let cwd = std::env::current_dir().map_err(|source| SyncsmithError::InvalidArguments {
@@ -63,7 +59,7 @@ pub fn run_with(prompter: &dyn Prompter, global: &GlobalArgs) -> Result<ExitStat
 
     let config_dir = config_dir_of(&resolution.path);
     let target_root = repo_root.clone().unwrap_or_else(|| config_dir.clone());
-    let loader = SourceLoader::new(config_dir.clone(), target_root);
+    let loader = SourceLoader::new(config_dir.clone(), target_root.clone());
 
     let entries = flow::run_flow(&mut state, prompter, &loader)?;
     // GOTCHA: an empty configuration (no entries) is only written after this
@@ -91,13 +87,31 @@ pub fn run_with(prompter: &dyn Prompter, global: &GlobalArgs) -> Result<ExitStat
         Err(error) => return Err(error),
     }
 
-    let context = sync::SyncContext { config, config_dir };
-    match sync::run(&context) {
-        Ok(()) => {}
-        Err(error @ SyncsmithError::SyncNotImplemented) => {
-            tracing::warn!("{error}; run `syncsmith sync` once it is available");
-        }
-        Err(error) => return Err(error),
+    // Final synchronization of the automatic entries, with the same report
+    // writer as the `sync` command. A per-entry failure propagates: the
+    // configuration is written, but a failed `init` must exit non-zero.
+    let expanded = config.expand_env()?;
+    expanded.validate()?;
+    let context = sync::SyncContext {
+        config: expanded,
+        config_dir,
+        target_root,
+    };
+    let outcome = sync::run(&context, &sync::Selection::Automatic)?;
+    let format = if global.json {
+        sync::ReportFormat::Json
+    } else {
+        sync::ReportFormat::Lines
+    };
+    if let Err(source) = sync::report::write(&mut std::io::stdout(), &outcome.changed, format) {
+        return Err(SyncsmithError::InvalidArguments {
+            reason: format!("cannot write the report to stdout: {source}"),
+        });
+    }
+    if !outcome.failures.is_empty() {
+        return Err(SyncsmithError::SyncFailures {
+            count: outcome.failures.len(),
+        });
     }
     Ok(ExitState::Completed)
 }

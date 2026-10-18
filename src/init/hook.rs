@@ -12,8 +12,17 @@ use super::flow::Prompter;
 pub const HOOK_FILE_NAME: &str = "pre-commit";
 
 /// Content of the installed hook.
-const HOOK_SCRIPT: &str =
-    "#!/bin/sh\n# Installed by syncsmith: run syncsmith sync before each commit.\nsyncsmith sync\n";
+///
+/// The hook stages exactly the files `syncsmith sync` reports, so no target
+/// is embedded in the script and it never goes stale when the configuration
+/// is edited. `git add --pathspec-from-file=-` handles paths containing
+/// spaces and stages deletions; it requires git 2.25+.
+const HOOK_SCRIPT: &str = "#!/bin/sh\n\
+# Installed by syncsmith: run syncsmith sync before each commit.\n\
+changed=$(syncsmith sync) || exit 1\n\
+if [ -n \"$changed\" ]; then\n\
+  printf '%s\\n' \"$changed\" | git add --pathspec-from-file=-\n\
+fi\n";
 
 /// Offers to install a pre-commit hook calling `syncsmith sync`.
 ///

@@ -38,6 +38,10 @@ pub struct GlobalArgs {
     /// Increase output verbosity: `-v` info, `-vv` debug, `-vvv` trace.
     #[arg(short = 'v', long, action = ArgAction::Count, global = true)]
     pub verbose: u8,
+
+    /// Emit the stdout payload as a single JSON document (where supported).
+    #[arg(long, global = true)]
+    pub json: bool,
 }
 
 /// Syncsmith subcommands.
@@ -45,12 +49,26 @@ pub struct GlobalArgs {
 pub enum Command {
     /// Initialize or update the `.syncsmith.toml` configuration file.
     Init,
+
+    /// Synchronize the target files described by the configuration.
+    Sync {
+        /// Target paths to synchronize, whatever their policy.
+        ///
+        /// Matched against entry `target` values after normalization; an
+        /// unknown target is a usage error.
+        targets: Vec<PathBuf>,
+
+        /// Synchronize every entry, manual ones included.
+        #[arg(long, conflicts_with = "targets")]
+        all: bool,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Cli, Command};
     use clap::Parser;
+    use std::path::PathBuf;
 
     #[test]
     fn parses_init_subcommand_with_defaults() {
@@ -58,6 +76,7 @@ mod tests {
         assert_eq!(cli.command, Command::Init);
         assert_eq!(cli.global.verbose, 0);
         assert_eq!(cli.global.config, None);
+        assert!(!cli.global.json);
     }
 
     #[test]
@@ -76,7 +95,54 @@ mod tests {
     fn parses_explicit_config_path() {
         let cli = Cli::try_parse_from(["syncsmith", "--config", "custom.sync.toml", "init"])
             .expect("valid input");
-        assert_eq!(cli.global.config, Some("custom.sync.toml".into()));
+        assert_eq!(cli.global.config, Some(PathBuf::from("custom.sync.toml")));
+    }
+
+    #[test]
+    fn parses_json_flag_before_and_after_the_subcommand() {
+        let cli = Cli::try_parse_from(["syncsmith", "--json", "init"]).expect("valid input");
+        assert!(cli.global.json);
+        let cli = Cli::try_parse_from(["syncsmith", "sync", "--json"]).expect("valid input");
+        assert!(cli.global.json);
+    }
+
+    #[test]
+    fn parses_sync_without_targets() {
+        let cli = Cli::try_parse_from(["syncsmith", "sync"]).expect("valid input");
+        assert_eq!(
+            cli.command,
+            Command::Sync {
+                targets: Vec::new(),
+                all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_sync_with_targets_and_all() {
+        let cli =
+            Cli::try_parse_from(["syncsmith", "sync", "a.yml", "dir/b.yml"]).expect("valid input");
+        assert_eq!(
+            cli.command,
+            Command::Sync {
+                targets: vec![PathBuf::from("a.yml"), PathBuf::from("dir/b.yml")],
+                all: false,
+            }
+        );
+        let cli = Cli::try_parse_from(["syncsmith", "sync", "--all"]).expect("valid input");
+        assert_eq!(
+            cli.command,
+            Command::Sync {
+                targets: Vec::new(),
+                all: true,
+            }
+        );
+    }
+
+    #[test]
+    fn all_conflicts_with_explicit_targets() {
+        let result = Cli::try_parse_from(["syncsmith", "sync", "--all", "a.yml"]);
+        assert!(result.is_err());
     }
 
     #[test]

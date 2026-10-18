@@ -19,6 +19,8 @@ For each entry:
     - If the target has been edited since the last synchronization, a patch of the difference between the last synchronized version of the source and the latest available version of the source is generated and applied to the target.
       - If conflicts result from the operation, the synchronization fails for that entry and the conflict is reported — the user handles it.
   - `overwrite`: the target is synchronized using the latest source. Any modification done to the target by the user is discarded and ignored.
+
+  `patch` is incompatible with folder sources (the last synchronized version of a folder cannot be reconstructed from a content hash, so an edited target could not be patched). A configuration combining a folder source with `patch` mode is rejected — use `overwrite` for folder sources.
 - `policy` — when the entry is synchronized:
   - `automatic`: the entry is updated on every synchronization.
   - `manual`: the entry is synchronized only when specifically requested by the user.
@@ -46,19 +48,30 @@ An entry may map a single file or a whole folder. When a folder is mapped, syncs
 A configuration is rejected when loading or when written by `init` if:
 
 - a `target` is empty, absolute, or lexically escapes the target repository (`..`),
-- two entries normalize to the same target path (for example `a.yml` and `./a.yml`).
+- two entries normalize to the same target path (for example `a.yml` and `./a.yml`),
+- an entry combines a folder source with `patch` mode (see above).
 
 ## Environment variables
 
 `$VAR` and `${VAR}` references are expanded in all string fields (repository, ref, path, folder, target) **at load time, in memory only**. The `.syncsmith.toml` file itself keeps the raw `$VAR`/`${VAR}` strings, so a configuration written on one machine stays portable to machines where the variables resolve differently. A `$` that does not start a valid variable name stays literal; referencing an unset variable is an error.
 
-## Edge cases (synchronization semantics)
+## Synchronization semantics
 
-The behaviors below describe the `sync` command, which is not implemented yet; the configuration schema above is final.
+The behaviors below describe the `sync` command.
 
 - If a target file does not exist yet, the first synchronization creates it from the source.
 - For a single-file entry, if the source file no longer exists at the pinned ref (or in the source folder), the synchronization fails for that entry: syncsmith reports an error, leaves the target untouched, and continues with the other entries.
+- For a folder entry, the entire tree is mirrored: additions, content changes, and removals. A source-side deletion is mirrored only when the target file is unedited; in `patch` mode an edited target whose source file was deleted fails the entry instead of losing the edits (`overwrite` deletes regardless of local edits).
+- In `patch` mode with an edited target, the last synchronized source version is recovered from the source repository using the commit hash stored in the lock. If it cannot be recovered (the server disallows fetching a commit by hash, or the commit was pruned), the entry fails with an actionable error; pinning a `ref` or using `overwrite` mode avoids the problem.
+- Empty directories in folder sources are ignored (git cannot represent them).
+- Entries are processed in configuration order, without parallelism. A per-entry failure does not stop the other entries; the run exits non-zero when any processed entry failed.
 
 ## State
 
-Syncsmith records its state in a `.syncsmith.lock` file at the repository root, meant to be committed next to `.syncsmith.toml`. For each target file, it stores the version of the source at the last successful synchronization (commit hash for git sources, content hash for folder sources). This is used to detect edits made to the target and to generate patches in `patch` mode. The lock file is owned by the future `sync` implementation.
+Syncsmith records its state in a `.syncsmith.lock` file (TOML) in the same directory as the configuration file, meant to be committed next to `.syncsmith.toml`. It is keyed by normalized target path, with one record per synchronized target file (a folder entry yields one record per file of the mirrored tree). Each record holds:
+
+- `target`: the normalized target path, relative to the target repository root;
+- `version`: the source version at the last successful synchronization — the commit hash for git sources, the content blob hash for folder sources;
+- `content`: the blob hash of the synchronized content, used to detect edits made to the target since then (a commit hash alone cannot detect them).
+
+Records are updated only for entries that succeed, and the file is written atomically (temporary file + rename) once at the end of a run. A missing lock file loads as empty, which means existing targets are treated as unedited and updated directly on the next run.

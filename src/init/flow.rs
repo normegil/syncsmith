@@ -276,7 +276,7 @@ fn add_source(
             .collect(),
     };
     let selection_targets = map_targets(&mut mapping, &selections)?;
-    let mode = ask_mode(prompter)?;
+    let mode = ask_mode(prompter, &source_ref)?;
     let policy = ask_policy(prompter)?;
     for selection_target in selection_targets {
         let spec = NewEntry {
@@ -489,12 +489,23 @@ fn build_entry(spec: &NewEntry, target: PathBuf) -> SyncEntry {
     }
 }
 
-/// Asks the default mode applied to all entries of the current source.
-pub(super) fn ask_mode(prompter: &dyn Prompter) -> Result<Mode, SyncsmithError> {
-    let choice = prompter.select(
-        "Default mode for entries from this source",
-        &owned(&[Mode::Patch.name(), Mode::Overwrite.name()]),
-    )?;
+/// Asks the default mode applied to all entries from the current source.
+///
+/// Folder sources are incompatible with `patch` mode (the last-synced
+/// version of a folder cannot be recovered), so the prompt offers
+/// `overwrite` only for them.
+pub(super) fn ask_mode(
+    prompter: &dyn Prompter,
+    source: &SourceRef,
+) -> Result<Mode, SyncsmithError> {
+    let options = match source {
+        SourceRef::Folder { .. } => {
+            tracing::info!("folder sources cannot use patch mode; offering overwrite only");
+            vec![Mode::Overwrite.name().to_string()]
+        }
+        SourceRef::Repository { .. } => owned(&[Mode::Patch.name(), Mode::Overwrite.name()]),
+    };
+    let choice = prompter.select("Default mode for entries from this source", &options)?;
     Mode::from_name(&choice).ok_or_else(|| SyncsmithError::InvalidArguments {
         reason: format!("unknown mode `{choice}`"),
     })
@@ -542,13 +553,20 @@ mod tests {
     /// behaves like an interruption at the prompt.
     struct ScriptedPrompter {
         answers: RefCell<VecDeque<Answer>>,
+        select_options: RefCell<Vec<Vec<String>>>,
     }
 
     impl ScriptedPrompter {
         fn new(answers: Vec<Answer>) -> Self {
             Self {
                 answers: RefCell::new(answers.into()),
+                select_options: RefCell::new(Vec::new()),
             }
+        }
+
+        /// The options offered by each `select` prompt, in prompt order.
+        fn select_options(&self) -> Vec<Vec<String>> {
+            self.select_options.borrow().clone()
         }
 
         fn pop(&self) -> Option<Answer> {
@@ -565,7 +583,8 @@ mod tests {
             }
         }
 
-        fn select(&self, _message: &str, _options: &[String]) -> Result<String, SyncsmithError> {
+        fn select(&self, _message: &str, options: &[String]) -> Result<String, SyncsmithError> {
+            self.select_options.borrow_mut().push(options.to_vec());
             match self.pop() {
                 Some(Answer::Select(value)) => Ok(value),
                 Some(other) => panic!("unexpected answer for select: {other:?}"),
@@ -689,7 +708,7 @@ mod tests {
             Answer::Multi(vec!["a.yml".into()]),
             Answer::Multi(vec![]),
             Answer::TextDefault("a.yml".into()),
-            Answer::Select("patch".into()),
+            Answer::Select("overwrite".into()),
             Answer::Select("automatic".into()),
             Answer::Confirm(true),
             Answer::Select("git repository".into()),
@@ -712,7 +731,7 @@ mod tests {
                         folder: PathBuf::from("rules/a.yml"),
                     },
                     target: "a.yml".into(),
-                    mode: Mode::Patch,
+                    mode: Mode::Overwrite,
                     policy: Policy::Automatic,
                 },
                 SyncEntry {
@@ -761,7 +780,7 @@ mod tests {
             Answer::Multi(vec![]),
             Answer::TextDefault("a.yml".into()),
             Answer::TextDefault("renamed.yml".into()),
-            Answer::Select("patch".into()),
+            Answer::Select("overwrite".into()),
             Answer::Select("automatic".into()),
             Answer::Confirm(false),
             Answer::Select("confirm".into()),
@@ -786,7 +805,7 @@ mod tests {
                 folder: PathBuf::from("rules/a.yml"),
             },
             target: "a.yml".into(),
-            mode: Mode::Patch,
+            mode: Mode::Overwrite,
             policy: Policy::Automatic,
         });
         let prompter = ScriptedPrompter::new(vec![
@@ -795,7 +814,7 @@ mod tests {
             Answer::Text("rules".into()),
             Answer::Multi(vec!["a.yml".into()]),
             Answer::TextDefault("a.yml".into()),
-            Answer::Select("patch".into()),
+            Answer::Select("overwrite".into()),
             Answer::Select("automatic".into()),
             Answer::Confirm(false),
             Answer::Select("edit entry".into()),
@@ -820,7 +839,7 @@ mod tests {
                 folder: PathBuf::from("rules/a.yml"),
             },
             target: "a.yml".into(),
-            mode: Mode::Patch,
+            mode: Mode::Overwrite,
             policy: Policy::Automatic,
         });
         let prompter = ScriptedPrompter::new(vec![
@@ -829,7 +848,7 @@ mod tests {
             Answer::Text("rules".into()),
             Answer::Multi(vec!["a.yml".into()]),
             Answer::TextDefault("a.yml".into()),
-            Answer::Select("patch".into()),
+            Answer::Select("overwrite".into()),
             Answer::Select("automatic".into()),
             Answer::Confirm(false),
             Answer::Select("remove entry".into()),
@@ -891,6 +910,76 @@ mod tests {
     }
 
     #[test]
+    fn folder_sources_are_offered_overwrite_mode_only() {
+        let fs = ScriptedFs {
+            trees: HashMap::from([("rules".to_string(), tree(vec![file("a.yml")]))]),
+        };
+        let prompter = ScriptedPrompter::new(vec![
+            Answer::Confirm(true),
+            Answer::Select("local folder".into()),
+            Answer::Text("rules".into()),
+            Answer::Multi(vec!["a.yml".into()]),
+            Answer::TextDefault("a.yml".into()),
+            Answer::Select("overwrite".into()),
+            Answer::Select("automatic".into()),
+            Answer::Confirm(false),
+            Answer::Select("confirm".into()),
+        ]);
+        let mut state = InitState::default();
+        let entries = run_flow(&mut state, &prompter, &fs).expect("flow completes");
+        // Select prompts in order: source type, mode, policy, review.
+        let options = prompter.select_options();
+        assert_eq!(
+            options.get(1),
+            Some(&vec!["overwrite".to_string()]),
+            "the mode prompt must offer overwrite only for folder sources"
+        );
+        assert_eq!(
+            entries,
+            vec![SyncEntry {
+                source: Source::Folder {
+                    folder: PathBuf::from("rules/a.yml"),
+                },
+                target: "a.yml".into(),
+                mode: Mode::Overwrite,
+                policy: Policy::Automatic,
+            }]
+        );
+    }
+
+    #[test]
+    fn git_repository_sources_are_offered_both_modes() {
+        let fs = ScriptedFs {
+            trees: HashMap::from([(
+                "https://example.com/rules.git".to_string(),
+                tree(vec![file("lints/base.yml")]),
+            )]),
+        };
+        let prompter = ScriptedPrompter::new(vec![
+            Answer::Confirm(true),
+            Answer::Select("git repository".into()),
+            Answer::Text("https://example.com/rules.git".into()),
+            Answer::TextDefault(String::new()),
+            Answer::Multi(vec!["lints/base.yml".into()]),
+            Answer::TextDefault("lints/base.yml".into()),
+            Answer::Select("patch".into()),
+            Answer::Select("automatic".into()),
+            Answer::Confirm(false),
+            Answer::Select("confirm".into()),
+        ]);
+        let mut state = InitState::default();
+        let entries = run_flow(&mut state, &prompter, &fs).expect("flow completes");
+        assert_eq!(entries[0].mode, Mode::Patch);
+        // Select prompts in order: source type, mode, policy, review.
+        let options = prompter.select_options();
+        assert_eq!(
+            options.get(1),
+            Some(&vec!["patch".to_string(), "overwrite".to_string()]),
+            "the mode prompt must offer both modes for git sources"
+        );
+    }
+
+    #[test]
     fn add_choice_keeps_existing_entries() {
         let entries = vec![existing_entry("a.yml")];
         let state = state_for_choice(ExistingChoice::Add, entries.clone()).expect("valid choice");
@@ -924,7 +1013,7 @@ mod tests {
             Answer::TextDefault("newrules".into()),
             Answer::Multi(vec!["a.yml".into()]),
             Answer::TextDefault("a.yml".into()),
-            Answer::Select("patch".into()),
+            Answer::Select("overwrite".into()),
             Answer::Select("automatic".into()),
             Answer::Confirm(false),
             Answer::Select("confirm".into()),
@@ -934,7 +1023,7 @@ mod tests {
                 folder: PathBuf::from("oldrules"),
             },
             target: "old.yml".into(),
-            mode: Mode::Patch,
+            mode: Mode::Overwrite,
             policy: Policy::Automatic,
         };
         let mut state =

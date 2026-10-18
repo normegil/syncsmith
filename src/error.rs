@@ -93,15 +93,104 @@ pub enum SyncsmithError {
     #[error("aborted")]
     Aborted,
 
-    /// The `sync` command is not implemented yet.
-    #[error("the `sync` command is not implemented yet")]
-    SyncNotImplemented,
-
     /// Invalid input was given to a prompt or argument.
     #[error("invalid arguments: {reason}")]
     InvalidArguments {
         /// What was invalid.
         reason: String,
+    },
+
+    /// The lock file could not be written.
+    #[error("failed to write the lock file at {path}")]
+    LockWrite {
+        /// Path of the lock file.
+        path: PathBuf,
+        /// Underlying I/O failure.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The lock file exists but cannot be read or parsed.
+    #[error("failed to load the lock file at {path}: {reason}")]
+    LockRead {
+        /// Path of the lock file.
+        path: PathBuf,
+        /// Underlying read or parse failure.
+        reason: String,
+    },
+
+    /// A patch merge produced conflicts for one entry.
+    ///
+    /// Collected per entry: the run continues with the other entries and
+    /// reports each failure individually.
+    #[error(
+        "conflict while synchronizing `{target}`: resolve the conflict markers \
+         (or the local edits) manually, then re-run `syncsmith sync`"
+    )]
+    MergeConflict {
+        /// Target path whose synchronization conflicted.
+        target: PathBuf,
+    },
+
+    /// The last-synced source version cannot be recovered.
+    #[error(
+        "last synchronized version {version} of {origin} cannot be recovered: {reason}; \
+         pin a `ref` in the configuration or re-synchronize in `overwrite` mode"
+    )]
+    SourceVersionUnavailable {
+        /// Repository URL or path the version was looked up in.
+        origin: String,
+        /// Commit hash recorded in the lock file.
+        version: String,
+        /// Why the version could not be recovered.
+        reason: String,
+    },
+
+    /// The content of a target or its source cannot be patched.
+    #[error("cannot patch `{target}`: {reason}")]
+    UnsupportedContent {
+        /// Target path whose content is unsupported.
+        target: PathBuf,
+        /// Why the content cannot be patched.
+        reason: String,
+    },
+
+    /// A target argument matches no configured entry.
+    #[error("unknown target(s): {unknown}; configured targets: {configured}")]
+    TargetSelection {
+        /// The rejected target arguments, comma-separated.
+        unknown: String,
+        /// The configured target paths, comma-separated.
+        configured: String,
+    },
+
+    /// A folder source is combined with `patch` mode.
+    #[error(
+        "target `{target}`: `patch` mode is incompatible with folder sources \
+         (the last synchronized version of a folder cannot be recovered from a \
+         content hash); use `overwrite` mode"
+    )]
+    PatchUnsupportedForFolder {
+        /// Target of the rejected entry.
+        target: String,
+    },
+
+    /// A target file could not be read or written during synchronization.
+    #[error("failed to update target at {path}")]
+    TargetIo {
+        /// Path of the target file.
+        path: PathBuf,
+        /// Underlying I/O failure.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// One or more entries failed during a sync run; the per-entry errors
+    /// were already reported individually on stderr.
+    #[error("{count} synchronization failure(s); see the errors reported above")]
+    SyncFailures {
+        /// Number of entries that failed.
+        count: usize,
     },
 }
 
@@ -139,5 +228,26 @@ mod tests {
             reason: "escapes".into(),
         };
         assert!(display(error).contains("a/../b.yml"));
+    }
+
+    #[test]
+    fn target_selection_message_lists_unknown_and_configured_targets() {
+        let error = SyncsmithError::TargetSelection {
+            unknown: "missing.yml".into(),
+            configured: "a.yml, dir/b.yml".into(),
+        };
+        let message = display(error);
+        assert!(message.contains("missing.yml") && message.contains("a.yml, dir/b.yml"));
+    }
+
+    #[test]
+    fn source_version_unavailable_message_suggests_pinning_a_ref() {
+        let error = SyncsmithError::SourceVersionUnavailable {
+            origin: "https://example.com/rules.git".into(),
+            version: "abc123".into(),
+            reason: "server disallows fetching by sha".into(),
+        };
+        let message = display(error);
+        assert!(message.contains("abc123") && message.contains("pin a `ref`"));
     }
 }

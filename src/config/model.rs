@@ -121,14 +121,21 @@ impl Config {
     ///
     /// Targets must be non-empty, lexically contained in the target
     /// repository (no absolute path, no `..` escape), and unique after
-    /// normalization. Presence of `mode` and `policy` is enforced structurally
-    /// by serde.
+    /// normalization. Folder sources must not use `patch` mode (the
+    /// last-synced version of a folder cannot be recovered from a content
+    /// hash, so an edited target could not be patched). Presence of `mode`
+    /// and `policy` is enforced structurally by serde.
     pub fn validate(&self) -> Result<(), SyncsmithError> {
         let mut seen: Vec<PathBuf> = Vec::with_capacity(self.sync.len());
         for entry in &self.sync {
             let normalized = target::validate_relative_target(&entry.target)?;
             if seen.contains(&normalized) {
                 return Err(SyncsmithError::DuplicateTarget {
+                    target: normalized.to_string_lossy().into_owned(),
+                });
+            }
+            if matches!(entry.source, Source::Folder { .. }) && entry.mode == Mode::Patch {
+                return Err(SyncsmithError::PatchUnsupportedForFolder {
                     target: normalized.to_string_lossy().into_owned(),
                 });
             }
@@ -315,8 +322,45 @@ policy = "manual"
                 folder: "rules".into(),
             },
             target: target.into(),
-            mode: Mode::Patch,
+            mode: Mode::Overwrite,
             policy: Policy::Automatic,
         }
+    }
+
+    #[test]
+    fn validate_rejects_folder_source_with_patch_mode() {
+        let config = Config {
+            sync: vec![SyncEntry {
+                source: Source::Folder {
+                    folder: "rules".into(),
+                },
+                target: "a.yml".into(),
+                mode: Mode::Patch,
+                policy: Policy::Automatic,
+            }],
+        };
+        let Err(crate::error::SyncsmithError::PatchUnsupportedForFolder { target, .. }) =
+            config.validate()
+        else {
+            panic!("folder source with patch mode must be rejected");
+        };
+        assert_eq!(target, "a.yml");
+    }
+
+    #[test]
+    fn validate_accepts_git_source_with_patch_mode() {
+        let config = Config {
+            sync: vec![SyncEntry {
+                source: Source::Repository {
+                    repository: "https://example.com/rules.git".into(),
+                    git_ref: None,
+                    path: "a.yml".into(),
+                },
+                target: "a.yml".into(),
+                mode: Mode::Patch,
+                policy: Policy::Automatic,
+            }],
+        };
+        assert!(config.validate().is_ok());
     }
 }

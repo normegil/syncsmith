@@ -102,6 +102,7 @@ fn resolve_config_path_reports_the_existence_of_an_explicit_path() {
     let found = resolve_config_path(&GlobalArgs {
         config: Some(existing.clone()),
         verbose: 0,
+        json: false,
     })
     .expect("explicit path resolves");
 
@@ -117,6 +118,7 @@ fn resolve_config_path_reports_the_existence_of_an_explicit_path() {
     let resolution = resolve_config_path(&GlobalArgs {
         config: Some(missing.clone()),
         verbose: 0,
+        json: false,
     })
     .expect("explicit path resolves");
 
@@ -143,6 +145,7 @@ fn resolve_config_path_without_config_targets_the_repository_root() {
     let resolution = resolve_config_path(&GlobalArgs {
         config: None,
         verbose: 0,
+        json: false,
     })
     .expect("resolution succeeds inside a repository");
 
@@ -166,6 +169,7 @@ fn resolve_config_path_outside_any_repository_targets_the_cwd() {
     let resolution = resolve_config_path(&GlobalArgs {
         config: None,
         verbose: 0,
+        json: false,
     })
     .expect("resolution succeeds outside any repository");
 

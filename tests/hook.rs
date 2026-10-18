@@ -23,8 +23,12 @@ use syncsmith::init::{ExitState, run_with};
 /// Serializes the tests that change the process working directory.
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
-const HOOK_SCRIPT: &str =
-    "#!/bin/sh\n# Installed by syncsmith: run syncsmith sync before each commit.\nsyncsmith sync\n";
+const HOOK_SCRIPT: &str = "#!/bin/sh\n\
+# Installed by syncsmith: run syncsmith sync before each commit.\n\
+changed=$(syncsmith sync) || exit 1\n\
+if [ -n \"$changed\" ]; then\n\
+  printf '%s\\n' \"$changed\" | git add --pathspec-from-file=-\n\
+fi\n";
 
 fn target_repository() -> TempDir {
     let repo = TempDir::new().expect("temporary repository is created");
@@ -43,6 +47,7 @@ fn run_init(answers: Vec<Answer>) -> ExitState {
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     )
     .expect("init completes")
@@ -234,6 +239,7 @@ fn interrupt_at_the_hook_prompt_completes_with_the_config_on_disk() {
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     )
     .expect("an interrupt at the hook offer only skips the hook");

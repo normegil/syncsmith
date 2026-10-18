@@ -6,6 +6,7 @@ use crate::config::{Source, SyncEntry};
 use crate::error::SyncsmithError;
 
 use super::flow::{InitState, MAX_INPUT_ATTEMPTS, Prompter, ask_mode, ask_policy};
+use super::source_loader::SourceRef;
 use super::target;
 
 /// Actions offered by the review loop.
@@ -110,7 +111,7 @@ fn edit_entry(prompter: &dyn Prompter, state: &mut InitState) -> Result<(), Sync
             edit_target(&request)?
         }
         "mode" => SyncEntry {
-            mode: ask_mode(prompter)?,
+            mode: ask_mode(prompter, &SourceRef::from_source(&current.source))?,
             ..current.clone()
         },
         "policy" => SyncEntry {

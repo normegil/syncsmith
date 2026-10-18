@@ -7,6 +7,58 @@ use std::time::{Duration, Instant};
 
 use crate::error::SyncsmithError;
 
+/// Whether a repository location is remote (cloned) rather than a local path.
+pub fn is_remote(location: &str) -> bool {
+    location.contains("://") || location.starts_with("git@")
+}
+
+/// Failure of a git invocation run through [`run_in`].
+#[derive(Debug)]
+pub struct GitCommandError {
+    /// The git arguments that were run, for error context.
+    pub args: String,
+    /// git's exit code, or `None` when git could not be started.
+    pub code: Option<i32>,
+    /// Last line of git's stderr, or the spawn failure description.
+    pub reason: String,
+}
+
+impl From<GitCommandError> for SyncsmithError {
+    fn from(failure: GitCommandError) -> Self {
+        SyncsmithError::GitCommand {
+            args: failure.args,
+            reason: failure.reason,
+        }
+    }
+}
+
+/// Runs `git -C dir args` and returns its stdout bytes.
+///
+/// On failure the git exit code and the last stderr line are returned so
+/// callers can map the failure to a domain error with git's own message.
+pub fn run_in(dir: &Path, args: &[&str]) -> Result<Vec<u8>, GitCommandError> {
+    let label = format!("-C {} {}", dir.display(), args.join(" "));
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|source| GitCommandError {
+            args: label.clone(),
+            code: None,
+            reason: source.to_string(),
+        })?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(GitCommandError {
+            args: label,
+            code: output.status.code(),
+            reason: last_line(&String::from_utf8_lossy(&output.stderr)),
+        })
+    }
+}
+
 /// Finds the root of the git repository containing `start`, if any.
 ///
 /// Walks up one directory at a time looking for a `.git` entry, so a `.git`

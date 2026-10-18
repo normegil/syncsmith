@@ -88,22 +88,23 @@ fn run_with_writes_mirrored_folder_targets_and_exits_success() {
         Answer::Multi(vec!["a.yml".into(), "lints (folder)".into()]),
         Answer::TextDefault("a.yml".into()),
         Answer::TextDefault("lints".into()),
-        Answer::Select("patch".into()),
+        // Folder sources only offer overwrite mode.
+        Answer::Select("overwrite".into()),
         Answer::Select("automatic".into()),
         Answer::Confirm(false),
         Answer::Select("confirm".into()),
         Answer::Confirm(false),
     ]);
 
-    // The sync stub is not implemented; init must still exit successfully.
     let state = run_with(
         &prompter,
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     )
-    .expect("init completes despite the sync stub");
+    .expect("init completes with the final synchronization");
 
     assert_eq!(state, ExitState::Completed);
     assert_eq!(
@@ -114,7 +115,7 @@ fn run_with_writes_mirrored_folder_targets_and_exits_success() {
                     folder: PathBuf::from(entered.as_str()).join("a.yml"),
                 },
                 target: "a.yml".into(),
-                mode: Mode::Patch,
+                mode: Mode::Overwrite,
                 policy: Policy::Automatic,
             },
             SyncEntry {
@@ -122,10 +123,20 @@ fn run_with_writes_mirrored_folder_targets_and_exits_success() {
                     folder: PathBuf::from(entered.as_str()).join("lints"),
                 },
                 target: "lints".into(),
-                mode: Mode::Patch,
+                mode: Mode::Overwrite,
                 policy: Policy::Automatic,
             },
         ]
+    );
+    // The final synchronization ran against the written entries.
+    assert_eq!(
+        fs::read_to_string(repo.path().join("a.yml")).expect("synchronized target is readable"),
+        "alpha"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("lints").join("base.yml"))
+            .expect("synchronized target is readable"),
+        "base"
     );
     assert!(!repo.path().join(format!("{CONFIG_FILE_NAME}.tmp")).exists());
 }
@@ -162,6 +173,7 @@ fn run_with_add_choice_appends_entries_and_installs_the_hook() {
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     )
     .expect("init completes");
@@ -211,7 +223,8 @@ fn run_with_restart_choice_replaces_existing_entries() {
         Answer::TextDefault("source".into()),
         Answer::Multi(vec!["c.yml".into()]),
         Answer::TextDefault("c.yml".into()),
-        Answer::Select("patch".into()),
+        // Folder sources only offer overwrite mode.
+        Answer::Select("overwrite".into()),
         Answer::Select("automatic".into()),
         Answer::Confirm(false),
         Answer::Select("confirm".into()),
@@ -223,6 +236,7 @@ fn run_with_restart_choice_replaces_existing_entries() {
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     )
     .expect("init completes");
@@ -235,7 +249,7 @@ fn run_with_restart_choice_replaces_existing_entries() {
                 folder: PathBuf::from("source").join("c.yml"),
             },
             target: "c.yml".into(),
-            mode: Mode::Patch,
+            mode: Mode::Overwrite,
             policy: Policy::Automatic,
         }]
     );
@@ -258,6 +272,7 @@ fn run_with_abort_choice_leaves_the_existing_configuration_unchanged() {
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     );
 
@@ -285,6 +300,7 @@ fn run_with_aborts_on_an_interrupted_prompt_without_writing_a_config() {
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     );
 
@@ -310,7 +326,8 @@ fn run_with_reprompts_until_the_target_stays_inside_the_repository() {
         Answer::Multi(vec!["x.yml".into()]),
         Answer::TextDefault("../escape.yml".into()),
         Answer::TextDefault("renamed.yml".into()),
-        Answer::Select("patch".into()),
+        // Folder sources only offer overwrite mode.
+        Answer::Select("overwrite".into()),
         Answer::Select("automatic".into()),
         Answer::Confirm(false),
         Answer::Select("confirm".into()),
@@ -322,6 +339,7 @@ fn run_with_reprompts_until_the_target_stays_inside_the_repository() {
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     )
     .expect("init completes after a valid target is given");
@@ -334,7 +352,7 @@ fn run_with_reprompts_until_the_target_stays_inside_the_repository() {
                 folder: PathBuf::from(entered.as_str()).join("x.yml"),
             },
             target: "renamed.yml".into(),
-            mode: Mode::Patch,
+            mode: Mode::Overwrite,
             policy: Policy::Automatic,
         }]
     );
@@ -366,6 +384,7 @@ policy = "manual"
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     );
 
@@ -404,6 +423,7 @@ fn run_with_restart_declining_an_empty_config_keeps_the_original_configuration()
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     );
 
@@ -433,6 +453,7 @@ fn run_with_fresh_declining_an_empty_config_writes_no_configuration() {
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     );
 
@@ -448,6 +469,11 @@ fn run_with_restart_prefills_the_source_prompts_from_the_discarded_git_entry() {
     let repo = target_repository();
     let origin = target_repository();
     write_source_file(origin.path(), "kept.yml", "kept");
+    // The final synchronization reads the source at the pinned ref, so the
+    // origin must actually carry `kept.yml` at `stable`.
+    git(origin.path(), &["add", "kept.yml"]);
+    git(origin.path(), &["commit", "-m", "keep"]);
+    git(origin.path(), &["branch", "stable"]);
     let entered = folder_source(origin.path());
     let existing = format!(
         r#"
@@ -485,6 +511,7 @@ policy = "manual"
         &GlobalArgs {
             config: None,
             verbose: 0,
+            json: false,
         },
     )
     .expect("init completes");

@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::config::Source;
 use crate::config::env;
 use crate::error::SyncsmithError;
 use crate::git;
@@ -30,6 +31,26 @@ pub enum SourceRef {
         /// containing the configuration file.
         folder: String,
     },
+}
+
+impl SourceRef {
+    /// Mirrors a configured entry source, so prompts (for instance the
+    /// mode offer) stay consistent with the source kind.
+    pub fn from_source(source: &Source) -> Self {
+        match source {
+            Source::Repository {
+                repository,
+                git_ref,
+                ..
+            } => Self::Repository {
+                repository: repository.clone(),
+                git_ref: git_ref.clone(),
+            },
+            Source::Folder { folder } => Self::Folder {
+                folder: folder.to_string_lossy().into_owned(),
+            },
+        }
+    }
 }
 
 /// One browsable file or folder of a source.
@@ -102,7 +123,7 @@ impl FlowFs for SourceLoader {
                 repository,
                 git_ref,
             } => {
-                if is_remote(repository) {
+                if git::is_remote(repository) {
                     let request = git::CloneRequest::new(repository.clone(), git_ref.clone());
                     let clone = git::shallow_clone(&request)?;
                     walk(clone.path(), repository)
@@ -113,11 +134,6 @@ impl FlowFs for SourceLoader {
             }
         }
     }
-}
-
-/// Remote locations are cloned; anything else is read from disk directly.
-fn is_remote(location: &str) -> bool {
-    location.contains("://") || location.starts_with("git@")
 }
 
 /// Walks a local tree: bounded depth, `.git` and symlinks skipped.
