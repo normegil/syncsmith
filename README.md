@@ -23,7 +23,7 @@ cargo test               # run the test suite
 |---|---|---|
 | `syncsmith init` | Available | Create or update `.syncsmith.toml` interactively (see below). |
 | `syncsmith sync` | Available | Synchronize files according to their policy (see below). Exits 0 when all processed entries succeeded, non-zero if any failed. |
-| `syncsmith check` | Not implemented yet | Verify that Automatic entries are up to date and Manual entries are still at their last synchronized version. Exits 0 when all checks pass. Intended for CI pipelines. |
+| `syncsmith check` | Available | Read-only verification that Automatic entries are up to date and Manual entries are still at their last synchronized version, for CI pipelines. Exits 0 when all checks pass, non-zero when files are not in sync; `--no-fail` reports them without failing, `-a`/`--all` also checks `manual` entries, `--json` renders the not-in-sync files as a JSON payload. |
 
 ### `syncsmith init`
 
@@ -88,12 +88,49 @@ fi
 
 `git add --pathspec-from-file=-` stages deletions and paths containing spaces, and requires **git 2.25+**. Filenames containing newlines are not handled by the line-based staging. `syncsmith` must be on the `PATH` for the hook to run.
 
+### `syncsmith check`
+
+Read-only verification that the target files are synchronized, for CI pipelines. It never writes anything — no target file, no lock file, no repository state — and applies the same selection semantics as `sync`:
+
+```
+syncsmith check [--all] [--no-fail] [<target>...]
+```
+
+| Invocation | Entries checked |
+|---|---|
+| `syncsmith check` | all `automatic` entries |
+| `syncsmith check --all` | every entry, `manual` ones included |
+| `syncsmith check <target>...` | the matching entries, whatever their policy |
+
+- `--no-fail`: still report the not-in-sync files, but exit 0 even when some are found. Evaluation failures (a source that cannot be loaded, an unrecoverable base version) and usage errors still exit non-zero — CI can distinguish "out of date" from "cannot verify".
+- An entry is evaluated per file against the lock records (see [docs/configuration.md](docs/configuration.md) for the exact in-sync rules): `automatic` entries must be at the latest available source version; `manual` entries must still be at their last synchronized version, where local edits are accepted in `patch` mode as long as the pending source patch would merge cleanly.
+- In `patch` mode with local edits and a pending source version, a trial three-way merge (same merge machinery as `sync`, result discarded) decides between `stale`/in sync and `conflicted`.
+
+stdout lists the not-in-sync paths, one per line, relative to the target repository root — the same contract as `sync`, so tooling is reusable. With `--json`, stdout is a single JSON document with the status of each file:
+
+```json
+[
+  { "path": "lints/base.yml", "status": "stale" },
+  { "path": "docs/aliases/zsh.txt", "status": "conflicted" }
+]
+```
+
+| Status | Meaning |
+|---|---|
+| `stale` | a patch is pending (the source moved since the last synchronization) |
+| `edited` | local edits that a synchronization would not preserve (`overwrite` mode) |
+| `conflicted` | the pending source patch conflicts with local edits (`patch` mode) |
+| `missing` | the target file does not exist but the source has it |
+| `extra` | the target file exists but the source no longer has it |
+
+The run exits 0 when every checked file is in sync (or with `--no-fail`), non-zero otherwise.
+
 ## Global options
 
 Available on every command:
 
 - `--config <path>`: use the given file instead of searching. Without it, syncsmith walks up from the current directory until a `.syncsmith.toml` is found or the git repository root is reached; `init` creates the file at the repository root (or current directory when outside a repository).
-- `--json`: render the stdout payload as a single JSON document where supported (currently `sync`; `init`'s final synchronization report honors it too).
+- `--json`: render the stdout payload as a single JSON document where supported (currently `sync` and `check`; `init`'s final synchronization report honors it too).
 - `-v`, repeatable: verbosity — no flag shows errors and warnings only, `-v` info, `-vv` debug, `-vvv` trace. `RUST_LOG` overrides the derived level. All diagnostics go to stderr; stdout stays clean.
 
 ## Exit codes

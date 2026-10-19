@@ -349,6 +349,34 @@ struct PatchSpec<'a> {
     target_content: Option<&'a [u8]>,
 }
 
+/// Builds the base-recovery request of an edited target in `patch` mode:
+/// the last-synced version recorded in the lock, read back from the source
+/// repository.
+///
+/// Fails for folder sources: their lock versions are content hashes that
+/// cannot be recovered from a repository (validation already rejects the
+/// combination, the guard keeps the path total).
+pub(crate) fn recovery_request<'a>(
+    entry: &'a SyncEntry,
+    record: &'a LockRecord,
+    source_path: &Path,
+) -> Result<source::RecoveryRequest<'a>, SyncsmithError> {
+    let origin = match &entry.source {
+        Source::Repository { repository, .. } => repository.as_str(),
+        // Unreachable: folder sources cannot use patch mode (validation).
+        Source::Folder { .. } => {
+            return Err(SyncsmithError::InvalidArguments {
+                reason: "folder sources cannot be patched".into(),
+            });
+        }
+    };
+    Ok(source::RecoveryRequest {
+        version: &record.version,
+        path: source_path.to_path_buf(),
+        origin,
+    })
+}
+
 /// Patches an edited target: recovers the last-synced source version and
 /// applies a three-way merge.
 fn sync_edited(patch: &PatchSpec, sink: &mut EntrySink) -> Result<(), SyncsmithError> {
@@ -363,20 +391,7 @@ fn sync_edited(patch: &PatchSpec, sink: &mut EntrySink) -> Result<(), SyncsmithE
             reason: "an edited target in patch mode requires an available source version".into(),
         });
     };
-    let origin = match &patch.spec.entry.source {
-        Source::Repository { repository, .. } => repository.clone(),
-        // Unreachable: folder sources cannot use patch mode (validation).
-        Source::Folder { .. } => {
-            return Err(SyncsmithError::InvalidArguments {
-                reason: "folder sources cannot be patched".into(),
-            });
-        }
-    };
-    let request = source::RecoveryRequest {
-        version: &record.version,
-        path: patch.spec.source_path.clone(),
-        origin: &origin,
-    };
+    let request = recovery_request(patch.spec.entry, record, &patch.spec.source_path)?;
     let base = patch.spec.snapshot.recover(&request)?;
     let input = merge::MergeInput {
         target: &patch.spec.key,
@@ -411,7 +426,8 @@ fn sync_edited(patch: &PatchSpec, sink: &mut EntrySink) -> Result<(), SyncsmithE
     }
 }
 
-fn entry_failure(target: &Path, error: SyncsmithError) -> EntryFailure {
+/// Collects a per-entry failure, shared by the `sync` and `check` runs.
+pub(crate) fn entry_failure(target: &Path, error: SyncsmithError) -> EntryFailure {
     EntryFailure {
         target: target.to_path_buf(),
         error,
@@ -419,7 +435,7 @@ fn entry_failure(target: &Path, error: SyncsmithError) -> EntryFailure {
 }
 
 /// Reads the current content of a target file; `None` when it is missing.
-fn read_target(path: &Path) -> Result<Option<Vec<u8>>, SyncsmithError> {
+pub(crate) fn read_target(path: &Path) -> Result<Option<Vec<u8>>, SyncsmithError> {
     match fs::read(path) {
         Ok(content) => Ok(Some(content)),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -453,7 +469,7 @@ const MAX_TARGET_WALK_DEPTH: usize = 16;
 
 /// Lists the files of a target directory, relative to it, skipping `.git`
 /// entries and symlinks; an empty list when the directory does not exist.
-fn list_target_files(dir: &Path) -> Result<Vec<PathBuf>, SyncsmithError> {
+pub(crate) fn list_target_files(dir: &Path) -> Result<Vec<PathBuf>, SyncsmithError> {
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
@@ -485,7 +501,7 @@ fn list_target_files(dir: &Path) -> Result<Vec<PathBuf>, SyncsmithError> {
 }
 
 /// The current working directory, as an actionable error context.
-fn current_dir() -> Result<PathBuf, SyncsmithError> {
+pub(crate) fn current_dir() -> Result<PathBuf, SyncsmithError> {
     std::env::current_dir().map_err(|source| SyncsmithError::InvalidArguments {
         reason: format!("cannot determine the current directory: {source}"),
     })

@@ -192,6 +192,17 @@ pub enum SyncsmithError {
         /// Number of entries that failed.
         count: usize,
     },
+
+    /// A `check` run found target files that are not synchronized; the
+    /// paths were already reported on stdout.
+    #[error(
+        "{count} target file(s) not in sync; run `syncsmith sync` to update them \
+         (or re-run `check --no-fail` to ignore this in CI)"
+    )]
+    CheckOutOfSync {
+        /// Number of target files that are not in sync.
+        count: usize,
+    },
 }
 
 #[cfg(test)]
@@ -249,5 +260,12 @@ mod tests {
         };
         let message = display(error);
         assert!(message.contains("abc123") && message.contains("pin a `ref`"));
+    }
+
+    #[test]
+    fn check_out_of_sync_message_contains_the_count_and_the_suggested_command() {
+        let error = SyncsmithError::CheckOutOfSync { count: 3 };
+        let message = display(error);
+        assert!(message.contains("3") && message.contains("syncsmith sync"));
     }
 }

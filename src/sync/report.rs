@@ -6,7 +6,7 @@
 //! to stderr in both modes.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -43,21 +43,29 @@ pub enum ReportFormat {
 /// Renders the changed files of a run in `format`.
 pub fn render(changed: &[ChangedFile], format: ReportFormat) -> String {
     match format {
-        ReportFormat::Lines => {
-            let mut text = String::new();
-            for file in changed {
-                text.push_str(&file.path.to_string_lossy());
-                text.push('\n');
-            }
-            text
-        }
-        ReportFormat::Json => serde_json::to_string(changed).unwrap_or_else(|error| {
-            // ChangedFile serializes infallibly (plain paths and lowercase
-            // tags); the fallback keeps rendering total for callers.
-            tracing::warn!("cannot serialize the report: {error}");
-            String::from("[]")
-        }),
+        ReportFormat::Lines => render_lines(changed.iter().map(|file| file.path.as_path())),
+        ReportFormat::Json => render_json(changed),
     }
+}
+
+/// Renders `paths` one per line, in iteration order.
+pub fn render_lines<'a>(paths: impl Iterator<Item = &'a Path>) -> String {
+    let mut text = String::new();
+    for path in paths {
+        text.push_str(&path.to_string_lossy());
+        text.push('\n');
+    }
+    text
+}
+
+/// Renders `items` as a single JSON document.
+pub fn render_json<T: Serialize>(items: &[T]) -> String {
+    serde_json::to_string(items).unwrap_or_else(|error| {
+        // The report items serialize infallibly (plain paths and lowercase
+        // tags); the fallback keeps rendering total for callers.
+        tracing::warn!("cannot serialize the report: {error}");
+        String::from("[]")
+    })
 }
 
 /// Writes the report to `out` (stdout in production).
@@ -110,5 +118,33 @@ mod tests {
     fn empty_report_renders_empty_output() {
         assert_eq!(render(&[], ReportFormat::Lines), "");
         assert_eq!(render(&[], ReportFormat::Json), "[]");
+    }
+
+    #[test]
+    fn render_lines_helper_matches_the_lines_format() {
+        let files = report();
+        let helper = super::render_lines(files.iter().map(|file| file.path.as_path()));
+        assert_eq!(helper, render(&files, ReportFormat::Lines));
+    }
+
+    #[test]
+    fn render_json_helper_matches_the_json_format() {
+        let files = report();
+        assert_eq!(
+            super::render_json(&files),
+            render(&files, ReportFormat::Json)
+        );
+    }
+
+    #[test]
+    fn render_json_carries_the_check_payload_path_and_status() {
+        let out_of_sync = vec![crate::check::OutOfSyncFile {
+            path: PathBuf::from("lints/base.yml"),
+            status: crate::check::CheckStatus::Stale,
+        }];
+        assert_eq!(
+            super::render_json(&out_of_sync),
+            r#"[{"path":"lints/base.yml","status":"stale"}]"#
+        );
     }
 }

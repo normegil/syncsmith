@@ -66,6 +66,17 @@ The behaviors below describe the `sync` command.
 - Empty directories in folder sources are ignored (git cannot represent them).
 - Entries are processed in configuration order, without parallelism. A per-entry failure does not stop the other entries; the run exits non-zero when any processed entry failed.
 
+## Check semantics
+
+The `check` command decides, per target file, whether it is synchronized — read-only, using the same lock records. The latest available version of a file is the source commit hash (git sources) or the content blob hash (folder sources).
+
+- **Automatic** entries are in sync if and only if no patch needs to be applied: the lock version matches the latest available version, and the target is unedited (local edits are accepted in `patch` mode when no patch is pending, since a future synchronization only refreshes the lock record; in `overwrite` mode they are reported, as a synchronization would discard them).
+- **Manual** entries ignore newer available source versions: they are in sync as long as the target is still at its last synchronized version. Local edits follow the mode rules: forbidden in `overwrite` mode, accepted in `patch` mode when the pending source patch would merge cleanly with them (a trial three-way merge, result discarded).
+- A file without a lock record (never synchronized, or the lock file was not committed) is in sync only when its content is byte-identical to the latest source.
+- A target file that no longer exists in the source (`missing` is the reverse) is reported `extra` — a synchronization would delete it.
+
+Files that are not in sync are reported on stdout with one of the statuses `stale`, `edited`, `conflicted`, `missing`, `extra` (see the README); the command exits non-zero unless `--no-fail` is given. Evaluation failures (a source that cannot be loaded, an unrecoverable base version) always exit non-zero.
+
 ## State
 
 Syncsmith records its state in a `.syncsmith.lock` file (TOML) in the same directory as the configuration file, meant to be committed next to `.syncsmith.toml`. It is keyed by normalized target path, with one record per synchronized target file (a folder entry yields one record per file of the mirrored tree). Each record holds:

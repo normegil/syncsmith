@@ -62,6 +62,25 @@ pub enum Command {
         #[arg(long, conflicts_with = "targets")]
         all: bool,
     },
+
+    /// Check that the target files are synchronized, without writing
+    /// anything (CI-friendly).
+    Check {
+        /// Target paths to check, whatever their policy.
+        ///
+        /// Matched against entry `target` values after normalization; an
+        /// unknown target is a usage error.
+        targets: Vec<PathBuf>,
+
+        /// Check every entry, manual ones included.
+        #[arg(short = 'a', long, conflicts_with = "targets")]
+        all: bool,
+
+        /// Exit 0 even when files are not in sync; fatal errors still
+        /// exit non-zero.
+        #[arg(long)]
+        no_fail: bool,
+    },
 }
 
 #[cfg(test)]
@@ -142,6 +161,57 @@ mod tests {
     #[test]
     fn all_conflicts_with_explicit_targets() {
         let result = Cli::try_parse_from(["syncsmith", "sync", "--all", "a.yml"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_check_without_targets() {
+        let cli = Cli::try_parse_from(["syncsmith", "check"]).expect("valid input");
+        assert_eq!(
+            cli.command,
+            Command::Check {
+                targets: Vec::new(),
+                all: false,
+                no_fail: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_check_with_targets_all_and_no_fail() {
+        let cli =
+            Cli::try_parse_from(["syncsmith", "check", "a.yml", "dir/b.yml"]).expect("valid input");
+        assert_eq!(
+            cli.command,
+            Command::Check {
+                targets: vec![PathBuf::from("a.yml"), PathBuf::from("dir/b.yml")],
+                all: false,
+                no_fail: false,
+            }
+        );
+        let cli = Cli::try_parse_from(["syncsmith", "check", "-a"]).expect("valid input");
+        assert_eq!(
+            cli.command,
+            Command::Check {
+                targets: Vec::new(),
+                all: true,
+                no_fail: false,
+            }
+        );
+        let cli = Cli::try_parse_from(["syncsmith", "check", "--no-fail"]).expect("valid input");
+        assert_eq!(
+            cli.command,
+            Command::Check {
+                targets: Vec::new(),
+                all: false,
+                no_fail: true,
+            }
+        );
+    }
+
+    #[test]
+    fn check_all_conflicts_with_explicit_targets() {
+        let result = Cli::try_parse_from(["syncsmith", "check", "--all", "a.yml"]);
         assert!(result.is_err());
     }
 

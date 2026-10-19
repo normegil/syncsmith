@@ -110,8 +110,14 @@ fn is_edited(state: &FileState) -> bool {
     state.record.is_some_and(|record| {
         state
             .target_content
-            .is_some_and(|content| record.content != blob_hash(content))
+            .is_some_and(|content| content_edited(record, content))
     })
+}
+
+/// Whether `target_content` diverges from the content recorded in `record`
+/// at the last synchronization (shared with the `check` evaluation).
+pub(crate) fn content_edited(record: &LockRecord, target_content: &[u8]) -> bool {
+    record.content != blob_hash(target_content)
 }
 
 /// Input of [`merge_edited`]: the three sides of a three-way merge.
