@@ -201,6 +201,7 @@ fn snapshot_repository(
         source.git_ref.unwrap_or("HEAD"),
         source.path.display()
     );
+    tracing::trace!(origin = %origin, "Snapshoting repository");
     if git::is_remote(source.repository) {
         let request = git::CloneRequest::new(
             source.repository.to_string(),
