@@ -16,7 +16,7 @@ use common::{Answer, ScriptedPrompter, enter, git};
 use tempfile::TempDir;
 
 use syncsmith::cli::GlobalArgs;
-use syncsmith::commands::init::{InitTarget, run_with};
+use syncsmith::commands::init::{InitTarget, run_hook_only, run_with};
 use syncsmith::config::CONFIG_FILE_NAME;
 use syncsmith::config::discovery::resolve_config_path;
 use syncsmith::error::SyncsmithError;
@@ -251,6 +251,76 @@ fn interrupt_at_the_hook_prompt_completes_with_the_config_on_disk() {
 
     assert!(repo.path().join(CONFIG_FILE_NAME).is_file());
     assert!(!pre_commit(repo.path()).exists());
+}
+
+#[test]
+fn init_hook_only_installs_the_hook_without_touching_the_configuration() {
+    let _lock = CWD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let repo = target_repository();
+    let _cwd = enter(repo.path());
+
+    run_hook_only().expect("hook-only init completes");
+
+    assert_eq!(
+        fs::read_to_string(pre_commit(repo.path())).expect("installed hook is readable"),
+        HOOK_SCRIPT
+    );
+    assert!(!repo.path().join(CONFIG_FILE_NAME).exists());
+}
+
+#[test]
+fn init_hook_only_overwrites_an_existing_hook_without_prompting() {
+    let _lock = CWD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let repo = target_repository();
+    let hook = pre_commit(repo.path());
+    fs::write(&hook, "#!/bin/sh\ncustom hook\n").expect("existing hook is written");
+    let _cwd = enter(repo.path());
+
+    run_hook_only().expect("hook-only init completes");
+
+    assert_eq!(
+        fs::read_to_string(&hook).expect("replaced hook is readable"),
+        HOOK_SCRIPT
+    );
+}
+
+#[test]
+fn init_hook_only_honors_a_relative_core_hooks_path() {
+    let _lock = CWD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let repo = target_repository();
+    git(repo.path(), &["config", "core.hooksPath", "custom-hooks"]);
+    let _cwd = enter(repo.path());
+
+    run_hook_only().expect("hook-only init completes");
+
+    assert!(
+        repo.path()
+            .join("custom-hooks")
+            .join("pre-commit")
+            .is_file()
+    );
+}
+
+#[test]
+fn init_hook_only_outside_a_git_repository_fails() {
+    let _lock = CWD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let outside = TempDir::new().expect("temporary directory is created");
+    let _cwd = enter(outside.path());
+
+    let result = run_hook_only();
+
+    assert!(matches!(
+        result,
+        Err(SyncsmithError::InvalidArguments { .. })
+    ));
 }
 
 #[test]

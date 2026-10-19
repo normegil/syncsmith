@@ -55,6 +55,16 @@ pub fn offer_install(
     write_hook(&hook_path)
 }
 
+/// Reinstalls the pre-commit hook without prompting.
+///
+/// The `init --hook` path: no confirmation is asked, an existing hook is
+/// overwritten, and the configuration file is neither read nor written.
+pub fn install_only(repo_root: &Path) -> Result<(), SyncsmithError> {
+    let hooks_dir = git::hooks_path(repo_root)?;
+    let hook_path = hooks_dir.join(HOOK_FILE_NAME);
+    write_hook(&hook_path)
+}
+
 fn write_hook(hook_path: &Path) -> Result<(), SyncsmithError> {
     write_hook_io(hook_path).map_err(|source| SyncsmithError::HookInstall {
         path: hook_path.to_path_buf(),

@@ -64,6 +64,21 @@ pub fn run(target: InitTarget, json: bool) -> Result<(), SyncsmithError> {
     run_with(&prompter, target, json)
 }
 
+/// Runs `init --hook`: reinstalls the pre-commit hook without prompting
+/// and without reading or writing the configuration.
+///
+/// The hook was explicitly requested, so not being inside a git
+/// repository is an error rather than a silent skip.
+pub fn run_hook_only() -> Result<(), SyncsmithError> {
+    let cwd = sync::current_dir()?;
+    let Some(repo_root) = git::repo_root(&cwd) else {
+        return Err(SyncsmithError::InvalidArguments {
+            reason: "--hook: no git repository found from the current directory".into(),
+        });
+    };
+    hook::install_only(&repo_root)
+}
+
 /// Runs `init` with an injected prompter, so integration tests can drive the
 /// whole flow with a scripted prompter.
 ///

@@ -21,7 +21,7 @@ cargo test               # run the test suite
 
 | Command | Description |
 |---|---|---|
-| `syncsmith init` | Create or update `.syncsmith.toml` interactively (see below). |
+| `syncsmith init` | Create or update `.syncsmith.toml` interactively (see below). `syncsmith init --hook` only (re)installs the pre-commit hook. |
 | `syncsmith sync` | Synchronize files according to their policy (see below). Exits 0 when all processed entries succeeded, non-zero if any failed. |
 | `syncsmith check` | Read-only verification that Automatic entries are up to date and Manual entries are still at their last synchronized version, for CI pipelines. Exits 0 when all checks pass, non-zero when files are not in sync; `--no-fail` reports them without failing, `-a`/`--all` also checks `manual` entries, `--json` renders the not-in-sync files as a JSON payload. |
 
@@ -44,6 +44,7 @@ Notes:
 - Interrupting (Ctrl-C, Esc, EOF) before the write aborts with nothing persisted. Interrupting at the hook-install prompt skips the hook but the configuration is written and the final synchronization already ran; a warning is logged and `init` still exits 0.
 - A synchronization failure makes `init` exit non-zero (the configuration is still written); the hook offer never happens in that case.
 - Folder sources only offer `overwrite` mode in the prompts (see [docs/configuration.md](docs/configuration.md)).
+- `syncsmith init --hook` skips the interactive flow and reinstalls the pre-commit hook without any confirmation, overwriting an existing hook. The configuration file is neither read nor written; the command fails when run outside a git repository.
 
 ### `syncsmith sync`
 

@@ -37,9 +37,13 @@ fn dispatch(cli: &Cli) -> Result<(), SyncsmithError> {
     let resolution = resolve_config_path(&cli.global)?;
     let json = cli.global.json;
     match &cli.command {
-        Command::Init => {
-            let target = InitTarget::from_resolution(&resolution)?;
-            init::run(target, json)
+        Command::Init { hook } => {
+            if *hook {
+                init::run_hook_only()
+            } else {
+                let target = InitTarget::from_resolution(&resolution)?;
+                init::run(target, json)
+            }
         }
         Command::Sync { targets, all } => sync::run_command(
             &resolution,

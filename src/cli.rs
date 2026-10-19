@@ -48,7 +48,12 @@ pub struct GlobalArgs {
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub enum Command {
     /// Initialize or update the `.syncsmith.toml` configuration file.
-    Init,
+    Init {
+        /// Only (re)install the pre-commit hook, skipping the interactive
+        /// flow and any confirmation.
+        #[arg(long)]
+        hook: bool,
+    },
 
     /// Synchronize the target files described by the configuration.
     Sync {
@@ -92,10 +97,16 @@ mod tests {
     #[test]
     fn parses_init_subcommand_with_defaults() {
         let cli = Cli::try_parse_from(["syncsmith", "init"]).expect("valid input");
-        assert_eq!(cli.command, Command::Init);
+        assert_eq!(cli.command, Command::Init { hook: false });
         assert_eq!(cli.global.verbose, 0);
         assert_eq!(cli.global.config, None);
         assert!(!cli.global.json);
+    }
+
+    #[test]
+    fn parses_init_hook_flag() {
+        let cli = Cli::try_parse_from(["syncsmith", "init", "--hook"]).expect("valid input");
+        assert_eq!(cli.command, Command::Init { hook: true });
     }
 
     #[test]
