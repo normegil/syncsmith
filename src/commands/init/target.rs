@@ -1,8 +1,9 @@
-//! Target path computation and validation (pure logic).
+//! Target path validation of the interactive `init` flow (pure logic).
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use crate::error::SyncsmithError;
+use crate::target::{normalize, validate_relative_target};
 
 /// Read-only view of the target filesystem used by validation.
 ///
@@ -13,26 +14,6 @@ pub trait TargetFs {
     fn target_exists(&self, target: &Path) -> bool;
     /// Whether the target path exists as a directory.
     fn target_is_dir(&self, target: &Path) -> bool;
-}
-
-/// Lexically normalizes `path` without touching the filesystem.
-///
-/// `.` components are dropped, `..` pops one component; a leading `..`
-/// (escape from the root) is preserved so callers can detect it.
-pub fn normalize(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    normalized.push("..");
-                }
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
 }
 
 /// Computes the default target of a selection: its path relative to the
@@ -82,31 +63,6 @@ pub fn validate_target(check: &TargetCheck, fs: &dyn TargetFs) -> Result<(), Syn
     Ok(())
 }
 
-/// Validates that `target` is a usable, repository-contained path and
-/// returns its lexically normalized form.
-pub fn validate_relative_target(target: &Path) -> Result<PathBuf, SyncsmithError> {
-    if target.as_os_str().is_empty() {
-        return Err(SyncsmithError::InvalidTarget {
-            target: String::new(),
-            reason: "target must not be empty".into(),
-        });
-    }
-    if target.is_absolute() {
-        return Err(SyncsmithError::InvalidTarget {
-            target: target.to_string_lossy().into_owned(),
-            reason: "target must be relative to the target repository root".into(),
-        });
-    }
-    let normalized = normalize(target);
-    if starts_with_parent(&normalized) {
-        return Err(SyncsmithError::InvalidTarget {
-            target: normalized.to_string_lossy().into_owned(),
-            reason: "target escapes the target repository".into(),
-        });
-    }
-    Ok(normalized)
-}
-
 /// Whether the target exists on disk but is not a configured target, meaning
 /// `sync` would overwrite a file or folder that is not synchronized.
 pub fn overwrite_collision(target: &Path, configured: &[PathBuf], fs: &dyn TargetFs) -> bool {
@@ -121,16 +77,9 @@ fn incoherent(target: &Path, reason: &str) -> SyncsmithError {
     }
 }
 
-fn starts_with_parent(path: &Path) -> bool {
-    matches!(path.components().next(), Some(Component::ParentDir))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        TargetCheck, TargetFs, default_target, normalize, overwrite_collision,
-        validate_relative_target, validate_target,
-    };
+    use super::{TargetCheck, TargetFs, default_target, overwrite_collision, validate_target};
     use crate::error::SyncsmithError;
     use std::path::{Path, PathBuf};
 
@@ -156,19 +105,6 @@ mod tests {
             files: vec![],
             directories: vec![],
         }
-    }
-
-    #[test]
-    fn normalize_drops_current_and_applies_parent_components() {
-        assert_eq!(normalize(Path::new("a/./b/../c")), PathBuf::from("a/c"));
-    }
-
-    #[test]
-    fn normalize_keeps_leading_parent() {
-        assert_eq!(
-            normalize(Path::new("../outside.yml")),
-            PathBuf::from("../outside.yml")
-        );
     }
 
     #[test]
@@ -237,30 +173,6 @@ mod tests {
         assert!(matches!(
             validate_target(&check, &empty_fs()),
             Err(SyncsmithError::DuplicateTarget { .. })
-        ));
-    }
-
-    #[test]
-    fn parent_escape_is_rejected() {
-        assert!(matches!(
-            validate_relative_target(Path::new("../outside.yml")),
-            Err(SyncsmithError::InvalidTarget { .. })
-        ));
-    }
-
-    #[test]
-    fn absolute_target_is_rejected() {
-        assert!(matches!(
-            validate_relative_target(Path::new("/etc/passwd")),
-            Err(SyncsmithError::InvalidTarget { .. })
-        ));
-    }
-
-    #[test]
-    fn empty_target_is_rejected() {
-        assert!(matches!(
-            validate_relative_target(Path::new("")),
-            Err(SyncsmithError::InvalidTarget { .. })
         ));
     }
 

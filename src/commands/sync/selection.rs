@@ -5,9 +5,9 @@
 
 use std::path::PathBuf;
 
-use crate::commands::init::target;
 use crate::config::{Policy, SyncEntry};
 use crate::error::SyncsmithError;
+use crate::target::normalize;
 
 /// Which entries a sync run processes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,16 +62,16 @@ fn select_targets<'a>(
     let mut selected = Vec::new();
     let mut unknown: Vec<PathBuf> = Vec::new();
     for wanted in targets {
-        let normalized = target::normalize(wanted);
+        let normalized = normalize(wanted);
         let already = selected
             .iter()
-            .any(|entry: &&SyncEntry| target::normalize(&entry.target) == normalized);
+            .any(|entry: &&SyncEntry| normalize(&entry.target) == normalized);
         if already {
             continue;
         }
         let found = entries
             .iter()
-            .find(|entry| target::normalize(&entry.target) == normalized);
+            .find(|entry| normalize(&entry.target) == normalized);
         match found {
             Some(entry) => selected.push(entry),
             None => unknown.push(normalized),
@@ -82,7 +82,7 @@ fn select_targets<'a>(
     }
     let configured: Vec<PathBuf> = entries
         .iter()
-        .map(|entry| target::normalize(&entry.target))
+        .map(|entry| normalize(&entry.target))
         .collect();
     Err(SyncsmithError::TargetSelection {
         unknown: joined(&unknown),

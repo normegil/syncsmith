@@ -9,12 +9,14 @@
 //!   [`crate::git::shallow_clone`]) and read at the ref; the clone is kept
 //!   alive for old-version recovery.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use sha1::{Digest, Sha1};
 
+use crate::commands::sync::lock::LockRecord;
 use crate::config::{Source, SyncEntry};
 use crate::error::SyncsmithError;
 use crate::git;
@@ -58,8 +60,13 @@ enum GitAccess {
     /// A local repository path: read directly.
     Local(PathBuf),
     /// A shallow clone of a remote repository; versions can be fetched by
-    /// commit hash.
-    RemoteClone(tempfile::TempDir),
+    /// commit hash, each version once per run.
+    RemoteClone {
+        /// The shallow clone, kept alive for the whole run.
+        dir: tempfile::TempDir,
+        /// Commit hashes already fetched into the clone.
+        fetched: RefCell<Vec<String>>,
+    },
 }
 
 impl SourceSnapshot {
@@ -72,13 +79,22 @@ impl SourceSnapshot {
         }
     }
 
+    /// The source version a sync run records for `content`: the entry's
+    /// resolved commit for git sources, the content blob hash for folder
+    /// sources.
+    pub fn version_of(&self, content: &[u8]) -> String {
+        self.version.clone().unwrap_or_else(|| blob_hash(content))
+    }
+
     /// Recovers the content of `request.path` at `request.version` (the
     /// last-synced source version recorded in the lock).
     ///
     /// For a remote repository the version is fetched into the clone with
-    /// `git fetch --depth 1 origin <sha>` first. An unrecoverable version
-    /// (server disallows fetching by SHA, pruned repository, unknown
-    /// commit) fails with [`SyncsmithError::SourceVersionUnavailable`].
+    /// `git fetch --depth 1 origin <sha>` first, once per version: several
+    /// files of one entry may need the same recovery version. An
+    /// unrecoverable version (server disallows fetching by SHA, pruned
+    /// repository, unknown commit) fails with
+    /// [`SyncsmithError::SourceVersionUnavailable`].
     pub fn recover(&self, request: &RecoveryRequest) -> Result<Vec<u8>, SyncsmithError> {
         let Some(access) = self.git.as_ref() else {
             return Err(SyncsmithError::SourceVersionUnavailable {
@@ -90,17 +106,32 @@ impl SourceSnapshot {
         let spec = format!("{}:{}", request.version, git_path(&request.path));
         let content = match access {
             GitAccess::Local(repo) => git::run_in(repo, &["show", &spec]),
-            GitAccess::RemoteClone(clone) => {
-                if let Err(failure) = git::run_in(
-                    clone.path(),
-                    &["fetch", "--depth", "1", "origin", request.version],
-                ) {
-                    return Err(recovery_unavailable(request, failure.reason));
-                }
-                git::run_in(clone.path(), &["show", &spec])
+            GitAccess::RemoteClone { dir, fetched } => {
+                ensure_fetched(dir.path(), request, &mut fetched.borrow_mut())?;
+                git::run_in(dir.path(), &["show", &spec])
             }
         };
         content.map_err(|failure| recovery_unavailable(request, failure.reason))
+    }
+}
+
+/// Fetches `request.version` into the clone, unless it already was during
+/// this run.
+fn ensure_fetched(
+    clone: &Path,
+    request: &RecoveryRequest,
+    fetched: &mut Vec<String>,
+) -> Result<(), SyncsmithError> {
+    if fetched.iter().any(|version| version == request.version) {
+        return Ok(());
+    }
+    let outcome = git::run_in(clone, &["fetch", "--depth", "1", "origin", request.version]);
+    match outcome {
+        Ok(_) => {
+            fetched.push(request.version.to_string());
+            Ok(())
+        }
+        Err(failure) => Err(recovery_unavailable(request, failure.reason)),
     }
 }
 
@@ -113,6 +144,34 @@ pub struct RecoveryRequest<'a> {
     pub path: PathBuf,
     /// Repository URL or path, for error context.
     pub origin: &'a str,
+}
+
+/// Builds the base-recovery request of an edited target in `patch` mode:
+/// the last-synced version recorded in the lock, read back from the source
+/// repository.
+///
+/// Fails for folder sources: their lock versions are content hashes that
+/// cannot be recovered from a repository (validation already rejects the
+/// combination, the guard keeps the path total).
+pub fn recovery_request<'a>(
+    entry: &'a SyncEntry,
+    record: &'a LockRecord,
+    source_path: &Path,
+) -> Result<RecoveryRequest<'a>, SyncsmithError> {
+    let origin = match &entry.source {
+        Source::Repository { repository, .. } => repository.as_str(),
+        // Unreachable: folder sources cannot use patch mode (validation).
+        Source::Folder { .. } => {
+            return Err(SyncsmithError::InvalidArguments {
+                reason: "folder sources cannot be patched".into(),
+            });
+        }
+    };
+    Ok(RecoveryRequest {
+        version: &record.version,
+        path: source_path.to_path_buf(),
+        origin,
+    })
 }
 
 fn recovery_unavailable(request: &RecoveryRequest, reason: String) -> SyncsmithError {
@@ -218,7 +277,10 @@ fn snapshot_repository(
         Ok(SourceSnapshot {
             version: Some(version),
             kind,
-            git: Some(GitAccess::RemoteClone(clone)),
+            git: Some(GitAccess::RemoteClone {
+                dir: clone,
+                fetched: RefCell::new(Vec::new()),
+            }),
         })
     } else {
         let repo = resolve_against(Path::new(source.repository), config_dir);

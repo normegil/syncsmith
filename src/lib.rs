@@ -12,5 +12,6 @@ pub mod config;
 pub mod error;
 pub mod git;
 pub mod logging;
+pub mod target;
 
 pub use error::SyncsmithError;

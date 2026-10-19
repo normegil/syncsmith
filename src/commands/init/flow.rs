@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use crate::config::{Mode, Policy, Source, SyncEntry};
 use crate::error::SyncsmithError;
+use crate::target::normalize;
 
 use super::review;
 use super::source_loader::{SourceRef, SourceTree, TreeItem};
@@ -329,7 +330,7 @@ impl<'a> Flow<'a> {
         let mut configured: Vec<PathBuf> = state
             .all()
             .iter()
-            .map(|entry| target::normalize(&entry.target))
+            .map(|entry| normalize(&entry.target))
             .collect();
         let selection_targets = self.map_targets(&selections, &mut configured)?;
         let mode = self.ask_mode(&source_ref)?;
@@ -491,7 +492,7 @@ impl<'a> Flow<'a> {
                                 "target exists and is not synchronized; `sync` may overwrite it"
                             );
                         }
-                        configured.push(target::normalize(&path));
+                        configured.push(normalize(&path));
                         targets.push(SelectionTarget {
                             item: item.clone(),
                             target: path,

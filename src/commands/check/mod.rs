@@ -8,15 +8,16 @@
 //! in sync.
 //!
 //! The command never writes anything: no target file, no lock file, no
-//! repository state. Entries are evaluated in configuration order (same
-//! selection model as `sync`); a per-entry failure is reported on stderr
-//! and does not stop the other entries.
+//! repository state. Entries walk their files with the same
+//! [`sync::entry`] walk as a sync run and are evaluated in configuration
+//! order; a per-entry failure is reported on stderr and does not stop the
+//! other entries.
 //!
 //! Per file, the evaluation ([`evaluate::evaluate`]) is pure; when it
-//! yields a conflict candidate (edited target in `patch` mode with a
-//! pending source version), a trial three-way merge decides: clean merges
-//! are in sync for `manual` entries and `stale` for `automatic` ones,
-//! conflicts are reported [`CheckStatus::Conflicted`]. Trial merges reuse
+//! yields a merge candidate (edited target in `patch` mode with a pending
+//! source version), a trial three-way merge decides: clean merges are in
+//! sync for `manual` entries and `stale` for `automatic` ones, conflicts
+//! are reported [`CheckStatus::Conflicted`]. Trial merges reuse
 //! `sync::merge::merge_edited`, which only writes temporary files; the
 //! merged content is discarded.
 //!
@@ -29,20 +30,22 @@ pub mod evaluate;
 
 pub use evaluate::{CheckStatus, SyncState};
 
-use std::collections::BTreeMap;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::commands::init::target;
-use crate::commands::sync::{
-    self, EntryFailure, LockFile, LockRecord, ReportFormat, Selection, SyncContext,
-};
-use crate::commands::sync::{merge, source};
+use crate::commands::sync;
+use crate::commands::sync::entry::{self, FileJob};
+use crate::commands::sync::merge;
+use crate::commands::sync::report::{self, ReportFormat};
+use crate::commands::sync::run::EntryFailure;
+use crate::commands::sync::source;
+use crate::commands::sync::target_io::read_target;
+use crate::commands::sync::{LockFile, Selection, SyncContext};
 use crate::config::discovery::Resolution;
-use crate::config::{Source, SyncEntry};
+use crate::config::{Policy, SyncEntry};
 use crate::error::SyncsmithError;
+use crate::target::normalize;
 
 /// Arguments of one `check` invocation.
 pub struct CheckInvocation {
@@ -84,26 +87,14 @@ pub fn run_command(
 /// Writes the not-in-sync files of a check run to stdout in the requested
 /// format: one path per line by default, one `{path, status}` object per
 /// file with `--json`.
-///
-/// A failed write propagates, like the sync report: CI relies on a
-/// non-zero exit when the payload is missing.
 fn write_check_payload(json: bool, outcome: &CheckOutcome) -> Result<(), SyncsmithError> {
-    let format = if json {
-        ReportFormat::Json
-    } else {
-        ReportFormat::Lines
-    };
-    let payload = match format {
+    let payload = match ReportFormat::of(json) {
         ReportFormat::Lines => {
-            sync::report::render_lines(outcome.out_of_sync.iter().map(|file| file.path.as_path()))
+            report::render_lines(outcome.out_of_sync.iter().map(|file| file.path.as_path()))
         }
-        ReportFormat::Json => sync::report::render_json(&outcome.out_of_sync),
+        ReportFormat::Json => report::render_json(&outcome.out_of_sync),
     };
-    std::io::stdout()
-        .write_all(payload.as_bytes())
-        .map_err(|source| SyncsmithError::InvalidArguments {
-            reason: format!("cannot write the report to stdout: {source}"),
-        })
+    report::write_stdout(&payload)
 }
 
 /// One target file that is not synchronized.
@@ -142,7 +133,7 @@ pub fn run(ctx: &SyncContext, selection: &Selection) -> Result<CheckOutcome, Syn
     let mut outcome = CheckOutcome::default();
     for entry in selected {
         match check_entry(ctx, entry, &lock) {
-            Ok(entry_outcome) => outcome.out_of_sync.extend(entry_outcome.out_of_sync),
+            Ok(files) => outcome.out_of_sync.extend(files),
             Err(failure) => {
                 tracing::error!(entry = %failure.target.display(), "{}", failure.error);
                 outcome.failures.push(failure);
@@ -152,60 +143,19 @@ pub fn run(ctx: &SyncContext, selection: &Selection) -> Result<CheckOutcome, Syn
     Ok(outcome)
 }
 
-/// Files reported by one entry.
-#[derive(Debug, Default)]
-struct EntryOutcome {
-    out_of_sync: Vec<OutOfSyncFile>,
-}
-
-/// Where the reports of the entry being checked are collected.
+/// Where the not-in-sync reports of the entry being checked are collected.
 struct EntrySink<'a> {
     /// Lock file of the run, read for edit detection (never saved).
     lock: &'a LockFile,
     /// Reports collected so far for the current entry.
-    outcome: &'a mut EntryOutcome,
+    out_of_sync: &'a mut Vec<OutOfSyncFile>,
 }
 
-/// An entry being checked, with its snapshot and normalized target.
-struct CheckJob<'a> {
-    /// Context of the run.
-    ctx: &'a SyncContext,
-    /// The entry being checked.
-    entry: &'a SyncEntry,
-    /// Latest snapshot of the entry's source (git access for base
-    /// recovery).
-    snapshot: &'a source::SourceSnapshot,
-    /// Normalized target path of the entry.
-    normalized: &'a Path,
-}
-
-impl CheckJob<'_> {
-    /// Builds the evaluation spec of one target file of this entry.
-    fn file(&self, relative: Option<&Path>, latest: Option<Vec<u8>>) -> CheckFile<'_> {
-        let key = match relative {
-            Some(relative) => self.normalized.join(relative),
-            None => self.normalized.to_path_buf(),
-        };
-        CheckFile {
-            job: self,
-            key,
-            latest,
-            source_path: source_path_of(self.entry, relative),
-        }
+impl EntrySink<'_> {
+    /// Reports one target file as not in sync.
+    fn push(&mut self, file: OutOfSyncFile) {
+        self.out_of_sync.push(file);
     }
-}
-
-/// One target file within a checked entry.
-struct CheckFile<'a> {
-    /// The entry being checked.
-    job: &'a CheckJob<'a>,
-    /// Normalized target path: lock key and report path.
-    key: PathBuf,
-    /// Latest source content; `None` when the file was deleted on the
-    /// source side.
-    latest: Option<Vec<u8>>,
-    /// Path of the file inside the source repository, for base recovery.
-    source_path: PathBuf,
 }
 
 /// Checks one entry; a failure fails the whole entry, exactly like a sync
@@ -214,86 +164,51 @@ fn check_entry(
     ctx: &SyncContext,
     entry: &SyncEntry,
     lock: &LockFile,
-) -> Result<EntryOutcome, EntryFailure> {
-    let normalized = target::normalize(&entry.target);
-    let snapshot = source::snapshot(entry, &ctx.config_dir)
-        .map_err(|error| sync::entry_failure(&normalized, error))?;
-    let job = CheckJob {
-        ctx,
-        entry,
-        snapshot: &snapshot,
-        normalized: &normalized,
+) -> Result<Vec<OutOfSyncFile>, EntryFailure> {
+    let normalized = normalize(&entry.target);
+    let failure = |error| EntryFailure::new(&normalized, error);
+    let files = entry::walk(ctx, entry, &normalized).map_err(failure)?;
+    let mut out_of_sync = Vec::new();
+    let mut sink = EntrySink {
+        lock,
+        out_of_sync: &mut out_of_sync,
     };
-    let mut outcome = EntryOutcome::default();
-    let result = match &snapshot.kind {
-        source::SnapshotKind::File { content } => {
-            let mut sink = EntrySink {
-                lock,
-                outcome: &mut outcome,
-            };
-            check_file(&job.file(None, Some(content.clone())), &mut sink)
-        }
-        source::SnapshotKind::Tree { files } => {
-            let mut sink = EntrySink {
-                lock,
-                outcome: &mut outcome,
-            };
-            check_tree(&job, files, &mut sink)
-        }
-    };
-    match result {
-        Ok(()) => Ok(outcome),
-        Err(error) => Err(sync::entry_failure(&normalized, error)),
+    for file in &files.files {
+        let job = FileJob {
+            ctx,
+            entry,
+            snapshot: &files.snapshot,
+            file,
+        };
+        check_file(&job, &mut sink).map_err(failure)?;
     }
+    Ok(out_of_sync)
 }
 
-/// Checks every file of a tree entry, then reports the target files absent
-/// from the source snapshot as `extra`.
-fn check_tree(
-    job: &CheckJob,
-    files: &BTreeMap<PathBuf, Vec<u8>>,
-    sink: &mut EntrySink,
-) -> Result<(), SyncsmithError> {
-    for (relative, content) in files {
-        check_file(&job.file(Some(relative), Some(content.clone())), sink)?;
-    }
-    let target_dir = job.ctx.target_root.join(job.normalized);
-    for existing in sync::list_target_files(&target_dir)? {
-        if !files.contains_key(&existing) {
-            check_file(&job.file(Some(&existing), None), sink)?;
-        }
-    }
-    Ok(())
-}
-
-/// Checks one target file, appending the reports to the sink.
-fn check_file(file: &CheckFile, sink: &mut EntrySink) -> Result<(), SyncsmithError> {
-    let target_path = file.job.ctx.target_root.join(&file.key);
-    let target_content = sync::read_target(&target_path)?;
-    let record = sink.lock.record(&file.key);
-    let latest_version = latest_version(file.job.snapshot, file.latest.as_deref());
+/// Checks one target file, appending its reports to the sink.
+fn check_file(job: &FileJob, sink: &mut EntrySink) -> Result<(), SyncsmithError> {
+    let target_path = job.ctx.target_root.join(&job.file.key);
+    let target_content = read_target(&target_path)?;
+    let latest_version = job
+        .file
+        .latest
+        .as_deref()
+        .map(|latest| job.snapshot.version_of(latest));
     let state = evaluate::CheckFileState {
-        policy: file.job.entry.policy,
-        mode: file.job.entry.mode,
-        target: &file.key,
-        latest: file.latest.as_deref(),
+        policy: job.entry.policy,
+        mode: job.entry.mode,
+        target: &job.file.key,
+        latest: job.file.latest.as_deref(),
         latest_version: latest_version.as_deref(),
         target_content: target_content.as_deref(),
-        record,
+        record: sink.lock.record(&job.file.key),
     };
     match evaluate::evaluate(&state) {
         SyncState::InSync => Ok(()),
-        SyncState::OutOfSync(CheckStatus::Conflicted) => {
-            let trial = TrialMerge {
-                file,
-                record,
-                ours: target_content.as_deref(),
-            };
-            refine_conflicted(&trial, sink)
-        }
+        SyncState::MergeCandidate(sides) => refine_candidate(job, sides, sink),
         SyncState::OutOfSync(status) => {
-            sink.outcome.out_of_sync.push(OutOfSyncFile {
-                path: file.key.clone(),
+            sink.push(OutOfSyncFile {
+                path: job.file.key.clone(),
                 status,
             });
             Ok(())
@@ -301,51 +216,33 @@ fn check_file(file: &CheckFile, sink: &mut EntrySink) -> Result<(), SyncsmithErr
     }
 }
 
-/// Input of [`refine_conflicted`]: the trial merge deciding a conflict
-/// candidate.
-struct TrialMerge<'a> {
-    /// The file whose evaluation is being refined.
-    file: &'a CheckFile<'a>,
-    /// Lock record of the file (always present on this path: the target is
-    /// edited, which requires a previous synchronization).
-    record: Option<&'a LockRecord>,
-    /// Current content of the target file.
-    ours: Option<&'a [u8]>,
-}
-
-/// Decides a conflict candidate with a trial three-way merge, without
+/// Decides a merge candidate with a trial three-way merge, without
 /// persisting the merged content.
 ///
 /// A clean merge refines the candidate to `stale` for `automatic` entries
 /// (a patch is still pending) and to in sync for `manual` ones (the local
 /// edits respect the patch rules); a conflict is reported as such.
-fn refine_conflicted(trial: &TrialMerge, sink: &mut EntrySink) -> Result<(), SyncsmithError> {
-    let (Some(record), Some(ours)) = (trial.record, trial.ours) else {
-        return Err(SyncsmithError::InvalidArguments {
-            reason: "a trial merge requires a lock record and an existing target".into(),
-        });
-    };
-    let Some(theirs) = trial.file.latest.as_deref() else {
-        return Err(SyncsmithError::InvalidArguments {
-            reason: "a trial merge requires an available source version".into(),
-        });
-    };
-    let request = sync::recovery_request(trial.file.job.entry, record, &trial.file.source_path)?;
-    let base = trial.file.job.snapshot.recover(&request)?;
+fn refine_candidate(
+    job: &FileJob,
+    sides: merge::PatchSides,
+    sink: &mut EntrySink,
+) -> Result<(), SyncsmithError> {
+    let request = source::recovery_request(job.entry, sides.record, &job.file.source_path)?;
+    let base = job.snapshot.recover(&request)?;
     let input = merge::MergeInput {
-        target: &trial.file.key,
-        ours,
+        target: &job.file.key,
+        ours: sides.target_content,
         base: &base,
-        theirs,
+        theirs: sides.latest,
     };
     // Read-only guarantee: the merged content is discarded, only the merge
     // outcome (clean or conflicted) is used.
     let merged_clean = matches!(merge::merge_edited(&input)?, merge::MergeResult::Merged(_));
-    if merged_clean && trial.file.job.entry.policy == crate::config::Policy::Manual {
+    if merged_clean && job.entry.policy == Policy::Manual {
         return Ok(());
     }
-    sink.outcome.out_of_sync.push(OutOfSyncFile {
-        path: trial.file.key.clone(),
+    sink.push(OutOfSyncFile {
+        path: job.file.key.clone(),
         status: if merged_clean {
             CheckStatus::Stale
         } else {
@@ -353,25 +250,4 @@ fn refine_conflicted(trial: &TrialMerge, sink: &mut EntrySink) -> Result<(), Syn
         },
     });
     Ok(())
-}
-
-/// The latest available version of a file: the source commit hash for git
-/// sources, the content blob hash for folder sources — exactly what a
-/// sync run would store in the lock.
-fn latest_version(snapshot: &source::SourceSnapshot, latest: Option<&[u8]>) -> Option<String> {
-    snapshot
-        .version
-        .clone()
-        .or_else(|| latest.map(source::blob_hash))
-}
-
-/// Path of a file inside the entry's source, for base recovery (same
-/// resolution as the sync file specs).
-fn source_path_of(entry: &SyncEntry, relative: Option<&Path>) -> PathBuf {
-    match (&entry.source, relative) {
-        (Source::Repository { path, .. }, Some(relative)) => path.join(relative),
-        (Source::Repository { path, .. }, None) => path.clone(),
-        (Source::Folder { folder }, Some(relative)) => folder.join(relative),
-        (Source::Folder { folder }, None) => folder.clone(),
-    }
 }

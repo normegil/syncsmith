@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::SyncsmithError;
+
 /// How a target file was changed by a sync run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -40,6 +42,13 @@ pub enum ReportFormat {
     Json,
 }
 
+impl ReportFormat {
+    /// The format selected by the `--json` flag.
+    pub fn of(json: bool) -> Self {
+        if json { Self::Json } else { Self::Lines }
+    }
+}
+
 /// Renders the changed files of a run in `format`.
 pub fn render(changed: &[ChangedFile], format: ReportFormat) -> String {
     match format {
@@ -68,13 +77,15 @@ pub fn render_json<T: Serialize>(items: &[T]) -> String {
     })
 }
 
-/// Writes the report to `out` (stdout in production).
-pub fn write(
-    out: &mut dyn Write,
-    changed: &[ChangedFile],
-    format: ReportFormat,
-) -> std::io::Result<()> {
-    out.write_all(render(changed, format).as_bytes())
+/// Writes the stdout payload of a run.
+///
+/// A failed write propagates: the pre-commit hook and CI pipelines rely on
+/// a non-zero exit when the payload is missing (closed pipe, full disk),
+/// so the report is never silently dropped.
+pub fn write_stdout(payload: &str) -> Result<(), SyncsmithError> {
+    std::io::stdout()
+        .write_all(payload.as_bytes())
+        .map_err(|source| SyncsmithError::ReportWrite { source })
 }
 
 #[cfg(test)]

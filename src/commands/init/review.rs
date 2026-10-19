@@ -8,7 +8,7 @@ use colored::Colorize;
 
 use super::flow::{Choice, Flow, InitState, MAX_INPUT_ATTEMPTS, Prompter};
 use super::source_loader::SourceRef;
-use super::target;
+use crate::target::{normalize, validate_relative_target};
 
 /// Width of the separator lines of the review summary.
 const SEPARATOR_WIDTH: usize = 60;
@@ -183,7 +183,7 @@ fn edit_target(request: &EditRequest) -> Result<SyncEntry, SyncsmithError> {
         .iter()
         .enumerate()
         .filter(|(index, _)| *index != request.index)
-        .map(|(_, entry)| target::normalize(&entry.target))
+        .map(|(_, entry)| normalize(&entry.target))
         .collect::<Vec<PathBuf>>();
     let mut attempts = 0;
     loop {
@@ -192,7 +192,7 @@ fn edit_target(request: &EditRequest) -> Result<SyncEntry, SyncsmithError> {
             &request.current.target.to_string_lossy(),
         )?;
         let path = PathBuf::from(input.trim());
-        let normalized = target::validate_relative_target(&path)?;
+        let normalized = validate_relative_target(&path)?;
         if others.contains(&normalized) {
             let error = SyncsmithError::DuplicateTarget {
                 target: normalized.to_string_lossy().into_owned(),

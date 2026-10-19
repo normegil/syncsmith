@@ -155,6 +155,14 @@ pub enum SyncsmithError {
         reason: String,
     },
 
+    /// The stdout payload of a command could not be written.
+    #[error("cannot write the report to stdout: {source}")]
+    ReportWrite {
+        /// Underlying I/O failure.
+        #[source]
+        source: std::io::Error,
+    },
+
     /// A target argument matches no configured entry.
     #[error("unknown target(s): {unknown}; configured targets: {configured}")]
     TargetSelection {
@@ -260,6 +268,14 @@ mod tests {
         };
         let message = display(error);
         assert!(message.contains("abc123") && message.contains("pin a `ref`"));
+    }
+
+    #[test]
+    fn report_write_message_names_stdout() {
+        let error = SyncsmithError::ReportWrite {
+            source: std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken pipe"),
+        };
+        assert!(display(error).contains("stdout"));
     }
 
     #[test]

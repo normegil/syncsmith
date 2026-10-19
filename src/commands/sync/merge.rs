@@ -32,9 +32,21 @@ pub struct FileState<'a> {
     pub record: Option<&'a LockRecord>,
 }
 
+/// The resolved sides of an edited-target patch: what [`decide`] hands to
+/// the three-way merge path, already checked against the lock record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PatchSides<'a> {
+    /// Lock record of the file; its version identifies the merge base.
+    pub record: &'a LockRecord,
+    /// Current content of the target file ("ours").
+    pub target_content: &'a [u8],
+    /// Latest source content ("theirs").
+    pub latest: &'a [u8],
+}
+
 /// How to synchronize one target file.
 #[derive(Debug)]
-pub enum Decision {
+pub enum Decision<'a> {
     /// The target already matches the source; only refresh the lock record.
     Unchanged,
     /// Write `content` to the target.
@@ -47,8 +59,9 @@ pub enum Decision {
     /// Delete the target file (mirroring a source-side deletion).
     Delete,
     /// The target is edited and the entry is in `patch` mode: recover the
-    /// last-synced source version and run a three-way merge.
-    MergeWithBase,
+    /// last-synced source version and run a three-way merge over the
+    /// carried sides.
+    MergeWithBase(PatchSides<'a>),
     /// The file cannot be synchronized; the entry fails with this error.
     Fail(SyncsmithError),
 }
@@ -62,7 +75,7 @@ pub enum Decision {
 ///   with the source change ([`Decision::MergeWithBase`]);
 /// - source-side deletion: mirrored unless the target was edited and the
 ///   entry is in `patch` mode, which fails instead of losing the edits.
-pub fn decide(state: &FileState) -> Decision {
+pub fn decide<'a>(state: &FileState<'a>) -> Decision<'a> {
     match state.latest {
         None => decide_deletion(state),
         Some(latest) => decide_update(state, latest),
@@ -70,11 +83,11 @@ pub fn decide(state: &FileState) -> Decision {
 }
 
 /// Decision for a source-side deletion (tree entries only).
-fn decide_deletion(state: &FileState) -> Decision {
-    if state.target_content.is_none() {
+fn decide_deletion<'a>(state: &FileState<'a>) -> Decision<'a> {
+    let Some(target_content) = state.target_content else {
         return Decision::Unchanged;
-    }
-    if is_edited(state) && state.mode == Mode::Patch {
+    };
+    if state.mode == Mode::Patch && edited_record(state, target_content).is_some() {
         return Decision::Fail(SyncsmithError::MergeConflict {
             target: state.target.to_path_buf(),
         });
@@ -83,7 +96,7 @@ fn decide_deletion(state: &FileState) -> Decision {
 }
 
 /// Decision for an available latest source version.
-fn decide_update(state: &FileState, latest: &[u8]) -> Decision {
+fn decide_update<'a>(state: &FileState<'a>, latest: &'a [u8]) -> Decision<'a> {
     let Some(target_content) = state.target_content else {
         return Decision::Write {
             content: latest.to_vec(),
@@ -93,8 +106,14 @@ fn decide_update(state: &FileState, latest: &[u8]) -> Decision {
     if target_content == latest {
         return Decision::Unchanged;
     }
-    if is_edited(state) && state.mode == Mode::Patch {
-        return Decision::MergeWithBase;
+    if state.mode == Mode::Patch
+        && let Some(record) = edited_record(state, target_content)
+    {
+        return Decision::MergeWithBase(PatchSides {
+            record,
+            target_content,
+            latest,
+        });
     }
     Decision::Write {
         content: latest.to_vec(),
@@ -102,16 +121,13 @@ fn decide_update(state: &FileState, latest: &[u8]) -> Decision {
     }
 }
 
-/// Whether the target content diverges from the last synchronized content.
-///
-/// Without a lock record the target is assumed unedited (first
-/// synchronization of an existing file).
-fn is_edited(state: &FileState) -> bool {
-    state.record.is_some_and(|record| {
-        state
-            .target_content
-            .is_some_and(|content| content_edited(record, content))
-    })
+/// The lock record when the target diverges from the content recorded at
+/// the last synchronization; `None` when the target is unedited or was
+/// never synchronized (first synchronization of an existing file).
+fn edited_record<'a>(state: &FileState<'a>, target_content: &[u8]) -> Option<&'a LockRecord> {
+    state
+        .record
+        .filter(|record| content_edited(record, target_content))
 }
 
 /// Whether `target_content` diverges from the content recorded in `record`
@@ -221,7 +237,7 @@ fn unsupported(target: &Path, role: &str, error: std::str::Utf8Error) -> Syncsmi
 
 #[cfg(test)]
 mod tests {
-    use super::{Decision, FileState, decide};
+    use super::{Decision, FileState, PatchSides, decide};
     use crate::commands::sync::lock::LockRecord;
     use crate::commands::sync::report::Action;
     use crate::commands::sync::source::blob_hash;
@@ -308,7 +324,17 @@ mod tests {
             Some(b"edited"),
             Some(&record),
         ));
-        assert!(matches!(decision, Decision::MergeWithBase));
+        let Decision::MergeWithBase(PatchSides {
+            record: sides_record,
+            target_content,
+            latest,
+        }) = decision
+        else {
+            panic!("an edited target in patch mode requires a merge");
+        };
+        assert_eq!(sides_record as *const _, &record as *const _);
+        assert_eq!(target_content, b"edited");
+        assert_eq!(latest, b"latest");
     }
 
     #[test]
