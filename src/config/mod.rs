@@ -1,5 +1,6 @@
 //! Configuration model, environment expansion, and file I/O.
 
+pub mod discovery;
 pub mod env;
 pub mod io;
 pub mod model;

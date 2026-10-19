@@ -148,10 +148,6 @@ fn walk(root: &Path, origin: &str) -> Result<SourceTree, SyncsmithError> {
             reason: format!("`{}` is not a folder", root.display()),
         });
     }
-    let source_error = |error: std::io::Error| SyncsmithError::SourceLoad {
-        origin: origin.to_string(),
-        reason: error.to_string(),
-    };
     let mut items = Vec::new();
     let mut queue: VecDeque<WalkNode> = VecDeque::from([WalkNode {
         dir: root.to_path_buf(),
@@ -159,33 +155,70 @@ fn walk(root: &Path, origin: &str) -> Result<SourceTree, SyncsmithError> {
         depth: 0,
     }]);
     while let Some(node) = queue.pop_front() {
-        let entries = fs::read_dir(&node.dir).map_err(source_error)?;
+        let entries = fs::read_dir(&node.dir).map_err(|error| source_error(origin, error))?;
         for entry in entries {
-            let entry = entry.map_err(source_error)?;
-            if entry.file_name() == ".git" {
+            let entry = entry.map_err(|error| source_error(origin, error))?;
+            let Some(classified) = classify(&entry, &node, origin)? else {
                 continue;
+            };
+            if let Some(child) = classified.child {
+                queue.push_back(child);
             }
-            let file_type = entry.file_type().map_err(source_error)?;
-            if file_type.is_symlink() {
-                continue;
-            }
-            let relative = node.prefix.join(entry.file_name());
-            let is_dir = file_type.is_dir();
-            items.push(TreeItem {
-                relative: relative.clone(),
-                is_dir,
-            });
-            if is_dir && node.depth < MAX_WALK_DEPTH {
-                queue.push_back(WalkNode {
-                    dir: entry.path(),
-                    prefix: relative,
-                    depth: node.depth + 1,
-                });
-            }
+            items.push(classified.item);
         }
     }
     items.sort_by(|left, right| left.relative.cmp(&right.relative));
     Ok(SourceTree { items })
+}
+
+/// One classified directory entry of a walk: the item to list and, for
+/// folders within the depth bound, the child directory to queue.
+struct ClassifiedEntry {
+    /// Browsable item added to the tree.
+    item: TreeItem,
+    /// Child directory to walk next; `None` for files and for folders at
+    /// [`MAX_WALK_DEPTH`].
+    child: Option<WalkNode>,
+}
+
+/// Classifies one directory entry of a walk.
+///
+/// `None` skips the entry: `.git` entries and symlinks never appear in the
+/// tree. Folders at [`MAX_WALK_DEPTH`] are listed but produce no child, so
+/// they are not descended into.
+fn classify(
+    entry: &fs::DirEntry,
+    node: &WalkNode,
+    origin: &str,
+) -> Result<Option<ClassifiedEntry>, SyncsmithError> {
+    if entry.file_name() == ".git" {
+        return Ok(None);
+    }
+    let file_type = entry
+        .file_type()
+        .map_err(|error| source_error(origin, error))?;
+    if file_type.is_symlink() {
+        return Ok(None);
+    }
+    let relative = node.prefix.join(entry.file_name());
+    let is_dir = file_type.is_dir();
+    let child = (is_dir && node.depth < MAX_WALK_DEPTH).then(|| WalkNode {
+        dir: entry.path(),
+        prefix: relative.clone(),
+        depth: node.depth + 1,
+    });
+    Ok(Some(ClassifiedEntry {
+        item: TreeItem { relative, is_dir },
+        child,
+    }))
+}
+
+/// Maps a walk I/O failure to the source-load error of `origin`.
+fn source_error(origin: &str, error: std::io::Error) -> SyncsmithError {
+    SyncsmithError::SourceLoad {
+        origin: origin.to_string(),
+        reason: error.to_string(),
+    }
 }
 
 /// One directory queued for walking.

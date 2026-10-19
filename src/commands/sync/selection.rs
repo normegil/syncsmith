@@ -5,9 +5,9 @@
 
 use std::path::PathBuf;
 
+use crate::commands::init::target;
 use crate::config::{Policy, SyncEntry};
 use crate::error::SyncsmithError;
-use crate::init::target;
 
 /// Which entries a sync run processes.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -222,11 +222,11 @@ fn unsupported(target: &Path, role: &str, error: std::str::Utf8Error) -> Syncsmi
 #[cfg(test)]
 mod tests {
     use super::{Decision, FileState, decide};
+    use crate::commands::sync::lock::LockRecord;
+    use crate::commands::sync::report::Action;
+    use crate::commands::sync::source::blob_hash;
     use crate::config::Mode;
     use crate::error::SyncsmithError;
-    use crate::sync::lock::LockRecord;
-    use crate::sync::report::Action;
-    use crate::sync::source::blob_hash;
     use std::path::Path;
 
     const TARGET: &str = "a.yml";

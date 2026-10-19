@@ -1,5 +1,11 @@
-//! The `check` command: read-only verification that the target files are
-//! synchronized, designed for CI pipelines.
+//! The `check` command: its CLI runner and the read-only verification
+//! domain, designed for CI pipelines.
+//!
+//! The runner ([`CheckInvocation`], [`run_command`]) resolves the context
+//! from the configuration location, checks the selected entries without
+//! writing anything, reports the not-in-sync files on stdout, and fails
+//! on evaluation failures or (without `--no-fail`) on files that are not
+//! in sync.
 //!
 //! The command never writes anything: no target file, no lock file, no
 //! repository state. Entries are evaluated in configuration order (same
@@ -24,19 +30,85 @@ pub mod evaluate;
 pub use evaluate::{CheckStatus, SyncState};
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::commands::init::target;
+use crate::commands::sync::{
+    self, EntryFailure, LockFile, LockRecord, ReportFormat, Selection, SyncContext,
+};
+use crate::commands::sync::{merge, source};
+use crate::config::discovery::Resolution;
 use crate::config::{Source, SyncEntry};
 use crate::error::SyncsmithError;
-use crate::init::target;
-use crate::sync::{self, EntryFailure, LockFile, LockRecord, Selection, SyncContext};
-use crate::sync::{merge, source};
+
+/// Arguments of one `check` invocation.
+pub struct CheckInvocation {
+    /// Target paths to check, whatever their policy.
+    pub targets: Vec<PathBuf>,
+    /// Check every entry, manual ones included.
+    pub all: bool,
+    /// Exit 0 even when files are not in sync.
+    pub no_fail: bool,
+    /// Emit the stdout payload as a single JSON document.
+    pub json: bool,
+}
+
+/// Runs the `check` command: resolves the context, checks the selected
+/// entries without writing anything, reports the not-in-sync files on
+/// stdout, and fails on evaluation failures or (without `--no-fail`) on
+/// files that are not in sync.
+pub fn run_command(
+    resolution: &Resolution,
+    invocation: CheckInvocation,
+) -> Result<(), SyncsmithError> {
+    let ctx = SyncContext::resolve(resolution)?;
+    let selection = Selection::from_args(invocation.all, invocation.targets);
+    let outcome = run(&ctx, &selection)?;
+    write_check_payload(invocation.json, &outcome)?;
+    if !outcome.failures.is_empty() {
+        return Err(SyncsmithError::SyncFailures {
+            count: outcome.failures.len(),
+        });
+    }
+    if !invocation.no_fail && !outcome.out_of_sync.is_empty() {
+        return Err(SyncsmithError::CheckOutOfSync {
+            count: outcome.out_of_sync.len(),
+        });
+    }
+    Ok(())
+}
+
+/// Writes the not-in-sync files of a check run to stdout in the requested
+/// format: one path per line by default, one `{path, status}` object per
+/// file with `--json`.
+///
+/// A failed write propagates, like the sync report: CI relies on a
+/// non-zero exit when the payload is missing.
+fn write_check_payload(json: bool, outcome: &CheckOutcome) -> Result<(), SyncsmithError> {
+    let format = if json {
+        ReportFormat::Json
+    } else {
+        ReportFormat::Lines
+    };
+    let payload = match format {
+        ReportFormat::Lines => {
+            sync::report::render_lines(outcome.out_of_sync.iter().map(|file| file.path.as_path()))
+        }
+        ReportFormat::Json => sync::report::render_json(&outcome.out_of_sync),
+    };
+    std::io::stdout()
+        .write_all(payload.as_bytes())
+        .map_err(|source| SyncsmithError::InvalidArguments {
+            reason: format!("cannot write the report to stdout: {source}"),
+        })
+}
 
 /// One target file that is not synchronized.
 ///
-/// Mirrors [`crate::sync::report::ChangedFile`] so tooling built for the
+/// Mirrors [`crate::commands::sync::report::ChangedFile`] so tooling built for the
 /// `sync` payload can be reused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutOfSyncFile {
@@ -66,7 +138,7 @@ pub struct CheckOutcome {
 /// loaded read-only and never saved.
 pub fn run(ctx: &SyncContext, selection: &Selection) -> Result<CheckOutcome, SyncsmithError> {
     let selected = sync::select(&ctx.config.sync, selection)?;
-    let lock = LockFile::load(&ctx.lock_path())?;
+    let lock = LockFile::load(&ctx.lock_path)?;
     let mut outcome = CheckOutcome::default();
     for entry in selected {
         match check_entry(ctx, entry, &lock) {

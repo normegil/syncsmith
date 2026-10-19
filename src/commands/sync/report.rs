@@ -138,9 +138,9 @@ mod tests {
 
     #[test]
     fn render_json_carries_the_check_payload_path_and_status() {
-        let out_of_sync = vec![crate::check::OutOfSyncFile {
+        let out_of_sync = vec![crate::commands::check::OutOfSyncFile {
             path: PathBuf::from("lints/base.yml"),
-            status: crate::check::CheckStatus::Stale,
+            status: crate::commands::check::CheckStatus::Stale,
         }];
         assert_eq!(
             super::render_json(&out_of_sync),

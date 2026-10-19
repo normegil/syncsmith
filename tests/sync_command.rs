@@ -19,14 +19,17 @@ use std::process::Command;
 use tempfile::TempDir;
 
 use syncsmith::cli::GlobalArgs;
-use syncsmith::config::{CONFIG_FILE_NAME, Config, Mode, Policy, Source, SyncEntry};
-use syncsmith::error::SyncsmithError;
-use syncsmith::sync::report::ReportFormat;
-use syncsmith::sync::source::blob_hash;
-use syncsmith::sync::{
+use syncsmith::commands;
+use syncsmith::commands::sync::SyncInvocation;
+use syncsmith::commands::sync::report::ReportFormat;
+use syncsmith::commands::sync::source::blob_hash;
+use syncsmith::commands::sync::{
     self, Action, ChangedFile, LOCK_FILE_NAME, LockFile, LockRecord, Selection, SyncContext,
     SyncOutcome,
 };
+use syncsmith::config::discovery::resolve_config_path;
+use syncsmith::config::{CONFIG_FILE_NAME, Config, Mode, Policy, Source, SyncEntry};
+use syncsmith::error::SyncsmithError;
 
 /// Runs `git -C dir args` and returns its trimmed stdout, panicking with
 /// git's stderr on failure.
@@ -133,6 +136,7 @@ fn context(target_repo: &TempDir, entries: Vec<SyncEntry>) -> SyncContext {
     SyncContext {
         config: Config { sync: entries },
         config_dir: target_repo.path().to_path_buf(),
+        lock_path: target_repo.path().join(LOCK_FILE_NAME),
         target_root: target_repo.path().to_path_buf(),
     }
 }
@@ -760,6 +764,31 @@ fn a_source_deletion_of_an_edited_target_fails_in_patch_mode() {
 fn write_config(repo: &TempDir, entries: Vec<SyncEntry>) {
     let text = toml::to_string(&Config { sync: entries }).expect("the configuration serializes");
     fs::write(repo.path().join(CONFIG_FILE_NAME), text).expect("the configuration file is written");
+}
+
+#[test]
+fn the_sync_command_requires_an_existing_configuration() {
+    let target = git_repository();
+    let resolution = resolve_config_path(&GlobalArgs {
+        config: Some(target.path().join(CONFIG_FILE_NAME)),
+        verbose: 0,
+        json: false,
+    })
+    .expect("the configuration location resolves");
+
+    let error = commands::sync::run_command(
+        &resolution,
+        SyncInvocation {
+            targets: Vec::new(),
+            all: false,
+            json: false,
+        },
+    )
+    .expect_err("a missing configuration fails the command");
+
+    assert!(matches!(error, SyncsmithError::ConfigNotFound { .. }));
+    // The command fails before any processing: no lock file is created.
+    assert!(!lock_path(&target).exists());
 }
 
 /// Runs the built `syncsmith` binary in `repo` with `args`, and returns its

@@ -12,12 +12,13 @@ use common::{Answer, ScriptedPrompter, enter, git};
 use tempfile::TempDir;
 
 use syncsmith::cli::GlobalArgs;
+use syncsmith::commands::init::{FlowFs, InitTarget, SourceLoader, SourceRef, TreeItem, run_with};
 use syncsmith::config::CONFIG_FILE_NAME;
 use syncsmith::config::Config;
+use syncsmith::config::discovery::resolve_config_path;
 use syncsmith::config::io::load;
 use syncsmith::config::{Mode, Policy, Source, SyncEntry};
 use syncsmith::error::SyncsmithError;
-use syncsmith::init::{ExitState, FlowFs, SourceLoader, SourceRef, TreeItem, run_with};
 
 /// Serializes the tests that change the process working directory.
 static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -47,6 +48,18 @@ fn target_repository() -> TempDir {
     repo
 }
 
+/// Builds the init target of `repo`: the configuration location resolved
+/// from an explicit `--config`, then loaded and validated when it exists.
+fn init_target(repo: &Path) -> Result<InitTarget, SyncsmithError> {
+    let resolution = resolve_config_path(&GlobalArgs {
+        config: Some(repo.join(CONFIG_FILE_NAME)),
+        verbose: 0,
+        json: false,
+    })
+    .expect("the configuration location resolves");
+    InitTarget::from_resolution(&resolution)
+}
+
 fn write_source_file(root: &Path, relative: &str, content: &str) {
     let path = root.join(relative);
     let parent = path.parent().expect("source files live in a directory");
@@ -67,6 +80,33 @@ fn item(relative: &str, is_dir: bool) -> TreeItem {
         relative: PathBuf::from(relative),
         is_dir,
     }
+}
+
+#[test]
+fn init_target_from_resolution_exposes_the_existing_configuration() {
+    let repo = target_repository();
+    fs::write(repo.path().join(CONFIG_FILE_NAME), EXISTING_CONFIG)
+        .expect("existing configuration is written");
+
+    let target = init_target(repo.path()).expect("the init target loads");
+
+    assert_eq!(target.resolution.path, repo.path().join(CONFIG_FILE_NAME));
+    assert!(target.resolution.exists);
+    assert_eq!(
+        target.existing.as_ref().map(|config| config.sync.clone()),
+        Some(vec![existing_entry()])
+    );
+}
+
+#[test]
+fn init_target_from_resolution_starts_fresh_without_a_configuration() {
+    let repo = target_repository();
+
+    let target = init_target(repo.path()).expect("the init target resolves");
+
+    assert_eq!(target.resolution.path, repo.path().join(CONFIG_FILE_NAME));
+    assert!(!target.resolution.exists);
+    assert!(target.existing.is_none());
 }
 
 #[test]
@@ -96,17 +136,13 @@ fn run_with_writes_mirrored_folder_targets_and_exits_success() {
         Answer::Confirm(false),
     ]);
 
-    let state = run_with(
+    run_with(
         &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
+        init_target(repo.path()).expect("the init target loads"),
+        false,
     )
     .expect("init completes with the final synchronization");
 
-    assert_eq!(state, ExitState::Completed);
     assert_eq!(
         load_written_config(repo.path()).sync,
         vec![
@@ -168,17 +204,13 @@ fn run_with_add_choice_appends_entries_and_installs_the_hook() {
         Answer::Confirm(true),
     ]);
 
-    let state = run_with(
+    run_with(
         &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
+        init_target(repo.path()).expect("the init target loads"),
+        false,
     )
     .expect("init completes");
 
-    assert_eq!(state, ExitState::Completed);
     assert_eq!(
         load_written_config(repo.path()).sync,
         vec![
@@ -231,17 +263,13 @@ fn run_with_restart_choice_replaces_existing_entries() {
         Answer::Confirm(false),
     ]);
 
-    let state = run_with(
+    run_with(
         &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
+        init_target(repo.path()).expect("the init target loads"),
+        false,
     )
     .expect("init completes");
 
-    assert_eq!(state, ExitState::Completed);
     assert_eq!(
         load_written_config(repo.path()).sync,
         vec![SyncEntry {
@@ -269,11 +297,8 @@ fn run_with_abort_choice_leaves_the_existing_configuration_unchanged() {
 
     let result = run_with(
         &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
+        init_target(repo.path()).expect("the init target loads"),
+        false,
     );
 
     assert!(matches!(result, Err(SyncsmithError::Aborted)));
@@ -297,11 +322,8 @@ fn run_with_aborts_on_an_interrupted_prompt_without_writing_a_config() {
 
     let result = run_with(
         &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
+        init_target(repo.path()).expect("the init target loads"),
+        false,
     );
 
     assert!(matches!(result, Err(SyncsmithError::Aborted)));
@@ -334,17 +356,13 @@ fn run_with_reprompts_until_the_target_stays_inside_the_repository() {
         Answer::Confirm(false),
     ]);
 
-    let state = run_with(
+    run_with(
         &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
+        init_target(repo.path()).expect("the init target loads"),
+        false,
     )
     .expect("init completes after a valid target is given");
 
-    assert_eq!(state, ExitState::Completed);
     assert_eq!(
         load_written_config(repo.path()).sync,
         vec![SyncEntry {
@@ -375,18 +393,9 @@ policy = "manual"
         .expect("escaping configuration is written");
     let _cwd = enter(repo.path());
 
-    // The invalid target must be rejected before any prompt: the empty script
-    // makes any prompt panic the test.
-    let prompter = ScriptedPrompter::new(vec![]);
-
-    let result = run_with(
-        &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
-    );
+    // The invalid target must be rejected before any prompt: the empty
+    // script makes any prompt panic the test.
+    let result = init_target(repo.path());
 
     let Err(SyncsmithError::InvalidTarget { target, .. }) = result else {
         panic!("expected InvalidTarget, got {result:?}")
@@ -420,11 +429,8 @@ fn run_with_restart_declining_an_empty_config_keeps_the_original_configuration()
 
     let result = run_with(
         &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
+        init_target(repo.path()).expect("the init target loads"),
+        false,
     );
 
     assert!(matches!(result, Err(SyncsmithError::Aborted)));
@@ -450,11 +456,8 @@ fn run_with_fresh_declining_an_empty_config_writes_no_configuration() {
 
     let result = run_with(
         &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
+        init_target(repo.path()).expect("the init target loads"),
+        false,
     );
 
     assert!(matches!(result, Err(SyncsmithError::Aborted)));
@@ -506,17 +509,13 @@ policy = "manual"
         Answer::Confirm(false),
     ]);
 
-    let state = run_with(
+    run_with(
         &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
+        init_target(repo.path()).expect("the init target loads"),
+        false,
     )
     .expect("init completes");
 
-    assert_eq!(state, ExitState::Completed);
     let defaults = prompter.text_defaults();
     assert!(
         defaults
@@ -578,17 +577,13 @@ fn run_with_empty_selection_continue_skips_the_source() {
         Answer::Confirm(false),
     ]);
 
-    let state = run_with(
+    run_with(
         &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
+        init_target(repo.path()).expect("the init target loads"),
+        false,
     )
     .expect("init completes with the kept source");
 
-    assert_eq!(state, ExitState::Completed);
     assert_eq!(
         load_written_config(repo.path()).sync,
         vec![SyncEntry {
@@ -636,17 +631,13 @@ fn run_with_review_add_another_entry_writes_both_sources() {
         Answer::Confirm(false),
     ]);
 
-    let state = run_with(
+    run_with(
         &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
+        init_target(repo.path()).expect("the init target loads"),
+        false,
     )
     .expect("init completes with both sources");
 
-    assert_eq!(state, ExitState::Completed);
     assert_eq!(
         load_written_config(repo.path()).sync,
         vec![

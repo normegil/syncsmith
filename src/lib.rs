@@ -1,18 +1,16 @@
-//! Library logic of syncsmith: configuration, discovery, git helpers,
-//! the interactive `init` flow, the `sync` entry point, and the read-only
-//! `check` command.
+//! Library logic of syncsmith: configuration, discovery, git helpers, and
+//! the `commands` package holding the `init`, `sync`, and `check` command
+//! runners together with the sync and check domain logic.
 //!
 //! The binary in `src/main.rs` only parses arguments, initializes logging,
-//! and delegates here.
+//! resolves the configuration location, and delegates to the command
+//! runners in [`commands`].
 
-pub mod check;
 pub mod cli;
+pub mod commands;
 pub mod config;
-pub mod discovery;
 pub mod error;
 pub mod git;
-pub mod init;
 pub mod logging;
-pub mod sync;
 
 pub use error::SyncsmithError;

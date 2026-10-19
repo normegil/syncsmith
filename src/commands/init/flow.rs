@@ -627,10 +627,10 @@ mod tests {
         Choice, ExistingChoice, Flow, FlowFs, InitState, Prompter, SourceDefaults, SourceKind,
         SourceRef, SourceTree, TreeItem, ask_existing, state_for_choice,
     };
+    use crate::commands::init::review::entry_label;
+    use crate::commands::init::target::TargetFs;
     use crate::config::{Mode, Policy, Source, SyncEntry};
     use crate::error::SyncsmithError;
-    use crate::init::review::entry_label;
-    use crate::init::target::TargetFs;
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
     use std::path::{Path, PathBuf};
@@ -938,7 +938,7 @@ mod tests {
             Answer::Confirm(false),
             Answer::Select("Edit entry".into()),
             Answer::Select(label),
-            Answer::Select("target".into()),
+            Answer::Select("Target".into()),
             Answer::TextDefault("renamed.yml".into()),
             Answer::Select("Validate".into()),
         ]);

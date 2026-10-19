@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SyncsmithError;
 
-use crate::init::target;
+use crate::commands::init::target;
 
 /// How a target is synchronized with its source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

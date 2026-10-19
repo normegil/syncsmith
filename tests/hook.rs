@@ -16,9 +16,11 @@ use common::{Answer, ScriptedPrompter, enter, git};
 use tempfile::TempDir;
 
 use syncsmith::cli::GlobalArgs;
+use syncsmith::commands::init::{InitTarget, run_with};
 use syncsmith::config::CONFIG_FILE_NAME;
+use syncsmith::config::discovery::resolve_config_path;
+use syncsmith::error::SyncsmithError;
 use syncsmith::git::hooks_path;
-use syncsmith::init::{ExitState, run_with};
 
 /// Serializes the tests that change the process working directory.
 static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -40,17 +42,22 @@ fn pre_commit(repo: &Path) -> PathBuf {
     repo.join(".git").join("hooks").join("pre-commit")
 }
 
-fn run_init(answers: Vec<Answer>) -> ExitState {
+/// Builds the init target of `repo`: the configuration location resolved
+/// from an explicit `--config`, then loaded and validated when it exists.
+fn init_target(repo: &Path) -> Result<InitTarget, SyncsmithError> {
+    let resolution = resolve_config_path(&GlobalArgs {
+        config: Some(repo.join(CONFIG_FILE_NAME)),
+        verbose: 0,
+        json: false,
+    })
+    .expect("the configuration location resolves");
+    InitTarget::from_resolution(&resolution)
+}
+
+fn run_init(answers: Vec<Answer>, repo: &Path) {
     let prompter = ScriptedPrompter::new(answers);
-    run_with(
-        &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
-    )
-    .expect("init completes")
+    let target = init_target(repo).expect("the init target loads");
+    run_with(&prompter, target, false).expect("init completes")
 }
 
 #[test]
@@ -100,13 +107,14 @@ fn accepted_hook_offer_installs_an_executable_pre_commit_hook() {
 
     // Confirm(false): no source; Confirm(true): write the empty config;
     // Confirm(true): install the hook.
-    let state = run_init(vec![
-        Answer::Confirm(false),
-        Answer::Confirm(true),
-        Answer::Confirm(true),
-    ]);
-
-    assert_eq!(state, ExitState::Completed);
+    run_init(
+        vec![
+            Answer::Confirm(false),
+            Answer::Confirm(true),
+            Answer::Confirm(true),
+        ],
+        repo.path(),
+    );
     let hook = pre_commit(repo.path());
     assert!(hook.is_file());
     assert_eq!(
@@ -130,13 +138,14 @@ fn declined_hook_offer_leaves_no_pre_commit_hook() {
 
     // Confirm(false): no source; Confirm(true): write the empty config;
     // Confirm(false): decline the hook.
-    let state = run_init(vec![
-        Answer::Confirm(false),
-        Answer::Confirm(true),
-        Answer::Confirm(false),
-    ]);
-
-    assert_eq!(state, ExitState::Completed);
+    run_init(
+        vec![
+            Answer::Confirm(false),
+            Answer::Confirm(true),
+            Answer::Confirm(false),
+        ],
+        repo.path(),
+    );
     assert!(!pre_commit(repo.path()).exists());
 }
 
@@ -152,14 +161,15 @@ fn existing_hook_is_kept_when_overwrite_is_declined() {
 
     // Confirm(false): no source; Confirm(true): write the empty config;
     // Confirm(true): install; Confirm(false): keep the existing hook.
-    let state = run_init(vec![
-        Answer::Confirm(false),
-        Answer::Confirm(true),
-        Answer::Confirm(true),
-        Answer::Confirm(false),
-    ]);
-
-    assert_eq!(state, ExitState::Completed);
+    run_init(
+        vec![
+            Answer::Confirm(false),
+            Answer::Confirm(true),
+            Answer::Confirm(true),
+            Answer::Confirm(false),
+        ],
+        repo.path(),
+    );
     assert_eq!(
         fs::read_to_string(&hook).expect("existing hook is readable"),
         "#!/bin/sh\ncustom hook\n"
@@ -178,14 +188,15 @@ fn existing_hook_is_replaced_when_overwrite_is_confirmed() {
 
     // Confirm(false): no source; Confirm(true): write the empty config;
     // Confirm(true): install; Confirm(true): overwrite the existing hook.
-    let state = run_init(vec![
-        Answer::Confirm(false),
-        Answer::Confirm(true),
-        Answer::Confirm(true),
-        Answer::Confirm(true),
-    ]);
-
-    assert_eq!(state, ExitState::Completed);
+    run_init(
+        vec![
+            Answer::Confirm(false),
+            Answer::Confirm(true),
+            Answer::Confirm(true),
+            Answer::Confirm(true),
+        ],
+        repo.path(),
+    );
     assert_eq!(
         fs::read_to_string(&hook).expect("replaced hook is readable"),
         HOOK_SCRIPT
@@ -203,13 +214,14 @@ fn hook_installation_honors_a_relative_core_hooks_path() {
 
     // Confirm(false): no source; Confirm(true): write the empty config;
     // Confirm(true): install the hook.
-    let state = run_init(vec![
-        Answer::Confirm(false),
-        Answer::Confirm(true),
-        Answer::Confirm(true),
-    ]);
-
-    assert_eq!(state, ExitState::Completed);
+    run_init(
+        vec![
+            Answer::Confirm(false),
+            Answer::Confirm(true),
+            Answer::Confirm(true),
+        ],
+        repo.path(),
+    );
     let hook = repo.path().join("custom-hooks").join("pre-commit");
     assert!(hook.is_file());
     assert_eq!(
@@ -234,17 +246,54 @@ fn interrupt_at_the_hook_prompt_completes_with_the_config_on_disk() {
         Answer::Confirm(true),
         Answer::Interrupt,
     ]);
-    let state = run_with(
-        &prompter,
-        &GlobalArgs {
-            config: None,
-            verbose: 0,
-            json: false,
-        },
-    )
-    .expect("an interrupt at the hook offer only skips the hook");
+    let target = init_target(repo.path()).expect("the init target loads");
+    run_with(&prompter, target, false).expect("an interrupt at the hook offer only skips the hook");
 
-    assert_eq!(state, ExitState::Completed);
     assert!(repo.path().join(CONFIG_FILE_NAME).is_file());
+    assert!(!pre_commit(repo.path()).exists());
+}
+
+#[test]
+fn a_failed_final_sync_skips_the_hook_offer_and_propagates() {
+    let _lock = CWD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let repo = target_repository();
+    // An automatic entry whose source is missing: the configuration loads
+    // and validates up front, but the final synchronization of the
+    // automatic entries fails on the source load.
+    let existing = r#"
+[[sync]]
+source = { folder = "missing-source.yml" }
+target = "out.yml"
+mode = "overwrite"
+policy = "automatic"
+"#;
+    fs::write(repo.path().join(CONFIG_FILE_NAME), existing)
+        .expect("existing configuration is written");
+    let _cwd = enter(repo.path());
+
+    // Add: keep the existing entry; Confirm(false): no new source;
+    // Validate: end the review. The script deliberately holds no hook
+    // answer: an erroneous hook offer would exhaust the script and panic
+    // the test at the prompt.
+    let prompter = ScriptedPrompter::new(vec![
+        Answer::Select("Add".into()),
+        Answer::Confirm(false),
+        Answer::Select("Validate".into()),
+    ]);
+    let target = init_target(repo.path()).expect("the init target loads");
+
+    let result = run_with(&prompter, target, false);
+
+    // The per-entry failure propagates: the run fails non-zero, the hook
+    // offer is skipped, and the configuration is already on disk.
+    assert!(matches!(
+        result,
+        Err(SyncsmithError::SyncFailures { count: 1 })
+    ));
+    let written = fs::read_to_string(repo.path().join(CONFIG_FILE_NAME))
+        .expect("written configuration is readable");
+    assert!(written.contains("out.yml"));
     assert!(!pre_commit(repo.path()).exists());
 }

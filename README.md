@@ -35,13 +35,14 @@ Interactive setup of the configuration file:
 4. Pick a default mode (`overwrite` by default; `patch` only for git sources) and policy (`automatic` by default) applied to all entries from that source; each option carries a one-line description.
 5. Review the synchronization summary (one green `source -> target` line per entry, with its mode and policy); validate it, edit an entry (target, mode, policy), remove an entry, or add another entry (which replays the full source flow and reprints the summary).
 6. On confirmation, write `.syncsmith.toml` atomically.
-7. Optionally install a pre-commit hook that runs `syncsmith sync` (honoring `core.hooksPath`; an existing hook is never overwritten without confirmation).
+7. Synchronize the `automatic` entries and report the changed paths on stdout, exactly like `syncsmith sync`.
+8. Optionally install a pre-commit hook that runs `syncsmith sync` (honoring `core.hooksPath`; an existing hook is never overwritten without confirmation). The offer is skipped when the final synchronization failed.
 
 Notes:
 
 - An empty configuration (no entries) is only written after an explicit confirmation.
-- Interrupting (Ctrl-C, Esc, EOF) before the write aborts with nothing persisted. Interrupting at the hook-install prompt skips the hook but the configuration is already written; a warning is logged and `init` still exits 0.
-- `init` ends by synchronizing the `automatic` entries and reporting the changed paths on stdout, exactly like `syncsmith sync`; a synchronization failure makes `init` exit non-zero.
+- Interrupting (Ctrl-C, Esc, EOF) before the write aborts with nothing persisted. Interrupting at the hook-install prompt skips the hook but the configuration is written and the final synchronization already ran; a warning is logged and `init` still exits 0.
+- A synchronization failure makes `init` exit non-zero (the configuration is still written); the hook offer never happens in that case.
 - Folder sources only offer `overwrite` mode in the prompts (see [docs/configuration.md](docs/configuration.md)).
 
 ### `syncsmith sync`

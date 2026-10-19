@@ -6,15 +6,15 @@
 //! A [`SyncState::OutOfSync`] with [`CheckStatus::Conflicted`] is a
 //! *candidate*: it means "edited target in `patch` mode with a pending
 //! source version", and the caller decides with a trial three-way merge
-//! (see [`crate::check`]).
+//! (see [`crate::commands::check`]).
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::commands::sync::lock::LockRecord;
+use crate::commands::sync::merge::content_edited;
 use crate::config::{Mode, Policy};
-use crate::sync::lock::LockRecord;
-use crate::sync::merge::content_edited;
 
 /// Why a target file is not in sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,9 +156,9 @@ fn manual_state(mode: Mode, flags: FileFlags) -> SyncState {
 #[cfg(test)]
 mod tests {
     use super::{CheckFileState, CheckStatus, SyncState, evaluate};
+    use crate::commands::sync::lock::LockRecord;
+    use crate::commands::sync::source::blob_hash;
     use crate::config::{Mode, Policy};
-    use crate::sync::lock::LockRecord;
-    use crate::sync::source::blob_hash;
     use std::path::Path;
 
     const TARGET: &str = "a.yml";

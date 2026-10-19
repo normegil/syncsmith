@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use syncsmith::SyncsmithError;
-use syncsmith::init::{Choice, Prompter};
+use syncsmith::commands::init::{Choice, Prompter};
 
 /// One scripted answer of a [`ScriptedPrompter`].
 #[derive(Debug, Clone)]

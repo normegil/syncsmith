@@ -7,8 +7,8 @@
 
 use std::path::Path;
 
+use syncsmith::commands::sync::merge::{MergeInput, MergeResult, merge_edited};
 use syncsmith::error::SyncsmithError;
-use syncsmith::sync::merge::{MergeInput, MergeResult, merge_edited};
 
 const TARGET: &str = "a.yml";
 

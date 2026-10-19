@@ -1,10 +1,15 @@
-//! The `sync` command: non-interactive synchronization of the target files
-//! described by the configuration.
+//! The `sync` command: its CLI runner and the synchronization domain.
 //!
-//! Entries are processed in configuration order (deterministic output, no
-//! parallelism). A per-entry failure is reported on stderr and does not stop
-//! the other entries; the lock file is updated only for entries that
-//! succeed and written once, atomically, at the end of the run.
+//! The runner ([`SyncInvocation`], [`run_command`]) resolves the context
+//! from the configuration location, synchronizes the selected entries,
+//! writes the changed paths to stdout, and fails when any entry failed.
+//!
+//! The domain synchronizes non-interactively the target files described by
+//! the configuration. Entries are processed in configuration order
+//! (deterministic output, no parallelism). A per-entry failure is reported
+//! on stderr and does not stop the other entries; the lock file is updated
+//! only for entries that succeed and written once, atomically, at the end
+//! of the run.
 
 pub mod lock;
 pub mod merge;
@@ -22,33 +27,83 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cli::GlobalArgs;
+use crate::commands::init::target;
+use crate::config::discovery::Resolution;
 use crate::config::{self, Config, Source, SyncEntry};
-use crate::discovery;
 use crate::error::SyncsmithError;
 use crate::git;
-use crate::init::target;
+
+/// Arguments of one `sync` invocation.
+pub struct SyncInvocation {
+    /// Target paths to synchronize, whatever their policy.
+    pub targets: Vec<PathBuf>,
+    /// Synchronize every entry, manual ones included.
+    pub all: bool,
+    /// Emit the stdout payload as a single JSON document.
+    pub json: bool,
+}
+
+/// Runs the `sync` command: resolves the context, synchronizes the selected
+/// entries, writes the changed paths to stdout, and fails when any entry
+/// failed.
+pub fn run_command(
+    resolution: &Resolution,
+    invocation: SyncInvocation,
+) -> Result<(), SyncsmithError> {
+    let ctx = SyncContext::resolve(resolution)?;
+    let selection = Selection::from_args(invocation.all, invocation.targets);
+    let outcome = run(&ctx, &selection)?;
+    write_report(invocation.json, &outcome)?;
+    if outcome.failures.is_empty() {
+        Ok(())
+    } else {
+        Err(SyncsmithError::SyncFailures {
+            count: outcome.failures.len(),
+        })
+    }
+}
+
+/// Writes the changed paths of a run to stdout in the requested format.
+///
+/// Shared with the final synchronization of the `init` command, so both
+/// commands emit the exact same payload. A failed write propagates: the
+/// pre-commit hook relies on a non-zero exit when the payload is missing
+/// (closed pipe, full disk), so the report is never silently dropped.
+pub(crate) fn write_report(json: bool, outcome: &SyncOutcome) -> Result<(), SyncsmithError> {
+    let format = if json {
+        ReportFormat::Json
+    } else {
+        ReportFormat::Lines
+    };
+    report::write(&mut std::io::stdout(), &outcome.changed, format).map_err(|source| {
+        SyncsmithError::InvalidArguments {
+            reason: format!("cannot write the report to stdout: {source}"),
+        }
+    })
+}
 
 /// Context of a sync run.
 pub struct SyncContext {
     /// The configuration to synchronize (environment variables already
     /// expanded, entries already validated).
     pub config: Config,
-    /// Directory containing the configuration file; the lock file is
-    /// written next to it and relative source paths resolve against it.
+    /// Directory containing the configuration file; relative source paths
+    /// resolve against it.
     pub config_dir: PathBuf,
+    /// Path of the lock file, next to the configuration file.
+    pub lock_path: PathBuf,
     /// Root of the target repository; target paths resolve against it.
     pub target_root: PathBuf,
 }
 
 impl SyncContext {
-    /// Resolves the context from the global CLI arguments: finds and loads
-    /// the configuration, expands environment variables, and validates it.
+    /// Resolves the context from the resolved configuration location:
+    /// loads the configuration, expands environment variables, and
+    /// validates it.
     ///
     /// Fails with [`SyncsmithError::ConfigNotFound`] when no configuration
-    /// file exists yet.
-    pub fn resolve(global: &GlobalArgs) -> Result<Self, SyncsmithError> {
-        let resolution = discovery::resolve_config_path(global)?;
+    /// file exists at the resolved location.
+    pub fn resolve(resolution: &Resolution) -> Result<Self, SyncsmithError> {
         if !resolution.exists {
             return Err(SyncsmithError::ConfigNotFound {
                 searched_from: current_dir()?,
@@ -57,18 +112,14 @@ impl SyncContext {
         let raw = config::io::load(&resolution.path)?;
         let config = raw.expand_env()?;
         config.validate()?;
-        let config_dir = config_dir_of(&resolution.path);
+        let config_dir = resolution.dir();
         let target_root = git::repo_root(&current_dir()?).unwrap_or_else(|| config_dir.clone());
         Ok(Self {
             config,
             config_dir,
+            lock_path: resolution.lock_path(),
             target_root,
         })
-    }
-
-    /// Path of the lock file, next to the configuration file.
-    pub fn lock_path(&self) -> PathBuf {
-        self.config_dir.join(LOCK_FILE_NAME)
     }
 }
 
@@ -97,8 +148,8 @@ pub struct SyncOutcome {
 /// file unreadable or unwritable) abort the run with an error.
 pub fn run(ctx: &SyncContext, selection: &Selection) -> Result<SyncOutcome, SyncsmithError> {
     let selected = selection::select(&ctx.config.sync, selection)?;
-    let lock_path = ctx.lock_path();
-    let mut lock = LockFile::load(&lock_path)?;
+    let lock_path = &ctx.lock_path;
+    let mut lock = LockFile::load(lock_path)?;
     let mut outcome = SyncOutcome::default();
     for entry in selected {
         match sync_entry(ctx, entry, &lock) {
@@ -121,7 +172,7 @@ pub fn run(ctx: &SyncContext, selection: &Selection) -> Result<SyncOutcome, Sync
     // as empty anyway. An existing file is always rewritten, so record
     // removals persist even when the last record disappears.
     if !lock.is_empty() || lock_path.is_file() {
-        lock.save_atomic(&lock_path)?;
+        lock.save_atomic(lock_path)?;
     }
     Ok(outcome)
 }
@@ -505,11 +556,4 @@ pub(crate) fn current_dir() -> Result<PathBuf, SyncsmithError> {
     std::env::current_dir().map_err(|source| SyncsmithError::InvalidArguments {
         reason: format!("cannot determine the current directory: {source}"),
     })
-}
-
-/// Directory containing the configuration file, used to resolve relative paths.
-fn config_dir_of(path: &Path) -> PathBuf {
-    path.parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
 }

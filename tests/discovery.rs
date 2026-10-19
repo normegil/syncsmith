@@ -11,7 +11,7 @@ use tempfile::TempDir;
 
 use syncsmith::cli::GlobalArgs;
 use syncsmith::config::CONFIG_FILE_NAME;
-use syncsmith::discovery::{Resolution, find_config, resolve_config_path};
+use syncsmith::config::discovery::{Resolution, find_config, resolve_config_path};
 use syncsmith::git::repo_root;
 
 /// Serializes the tests that change the process working directory.

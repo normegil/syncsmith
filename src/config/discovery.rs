@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::cli::GlobalArgs;
+use crate::commands::sync::lock::LOCK_FILE_NAME;
 use crate::config::CONFIG_FILE_NAME;
 use crate::error::SyncsmithError;
 use crate::git;
@@ -14,6 +15,24 @@ pub struct Resolution {
     pub path: PathBuf,
     /// Whether the file already exists.
     pub exists: bool,
+}
+
+impl Resolution {
+    /// Directory containing the configuration file, against which
+    /// relative paths (sources, lock file) resolve.
+    ///
+    /// Falls back to `.` for a path without a parent (a bare file name).
+    pub fn dir(&self) -> PathBuf {
+        self.path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Path of the lock file, next to the configuration file.
+    pub fn lock_path(&self) -> PathBuf {
+        self.dir().join(LOCK_FILE_NAME)
+    }
 }
 
 /// Resolves the configuration path from the global arguments.
@@ -65,4 +84,45 @@ pub fn find_config(start: &Path) -> Option<PathBuf> {
         current = directory.parent();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Resolution;
+    use crate::commands::sync::lock::LOCK_FILE_NAME;
+    use std::path::PathBuf;
+
+    fn resolution(path: &str) -> Resolution {
+        Resolution {
+            path: PathBuf::from(path),
+            exists: true,
+        }
+    }
+
+    #[test]
+    fn dir_returns_the_parent_directory_with_the_documented_fallbacks() {
+        // `/` has no parent: the fallback is `.`. A bare relative file
+        // name has the empty path as its parent, so relative sources
+        // resolve against the process working directory (same semantics
+        // as the former private `config_dir_of` helpers).
+        for (path, expected) in [
+            ("/repo/.syncsmith.toml", "/repo"),
+            ("/", "."),
+            (".syncsmith.toml", ""),
+        ] {
+            assert_eq!(
+                resolution(path).dir(),
+                PathBuf::from(expected),
+                "unexpected directory for `{path}`"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_path_sits_next_to_the_configuration() {
+        assert_eq!(
+            resolution("/repo/nested/.syncsmith.toml").lock_path(),
+            PathBuf::from("/repo/nested").join(LOCK_FILE_NAME)
+        );
+    }
 }
