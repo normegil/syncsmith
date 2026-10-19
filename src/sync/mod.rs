@@ -153,7 +153,7 @@ struct EntryJob<'a> {
     /// Latest snapshot of the entry's source.
     snapshot: &'a source::SourceSnapshot,
     /// Normalized target path of the entry.
-    normalized: &'a Path,
+    normalized_target: &'a Path,
 }
 
 /// One file within an entry: its position in the source and its latest
@@ -168,8 +168,8 @@ impl EntryJob<'_> {
     /// Builds the synchronization spec of one target file of this entry.
     fn file_spec(&self, file: SourceFile) -> FileSpec<'_> {
         let key = match &file.relative {
-            Some(relative) => self.normalized.join(relative),
-            None => self.normalized.to_path_buf(),
+            Some(relative) => self.normalized_target.join(relative),
+            None => self.normalized_target.to_path_buf(),
         };
         let source_path = match (&self.entry.source, &file.relative) {
             (Source::Repository { path, .. }, Some(relative)) => path.join(relative),
@@ -200,14 +200,14 @@ fn sync_entry(
     entry: &SyncEntry,
     lock: &LockFile,
 ) -> Result<EntryOutcome, EntryFailure> {
-    let normalized = target::normalize(&entry.target);
+    let normalized_target = target::normalize(&entry.target);
     let snapshot = source::snapshot(entry, &ctx.config_dir)
-        .map_err(|error| entry_failure(&normalized, error))?;
+        .map_err(|error| entry_failure(&normalized_target, error))?;
     let job = EntryJob {
         ctx,
         entry,
         snapshot: &snapshot,
-        normalized: &normalized,
+        normalized_target: &normalized_target,
     };
     let mut outcome = EntryOutcome::default();
     let mut sink = EntrySink {
@@ -226,7 +226,7 @@ fn sync_entry(
     };
     match result {
         Ok(()) => Ok(outcome),
-        Err(error) => Err(entry_failure(&normalized, error)),
+        Err(error) => Err(entry_failure(&normalized_target, error)),
     }
 }
 
@@ -244,7 +244,7 @@ fn sync_tree(
         };
         sync_file(&job.file_spec(file), sink)?;
     }
-    let target_dir = job.ctx.target_root.join(job.normalized);
+    let target_dir = job.ctx.target_root.join(job.normalized_target);
     for existing in list_target_files(&target_dir)? {
         if !files.contains_key(&existing) {
             let file = SourceFile {

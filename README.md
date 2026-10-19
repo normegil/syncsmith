@@ -19,11 +19,11 @@ cargo test               # run the test suite
 
 ## Commands
 
-| Command | Status | Description |
+| Command | Description |
 |---|---|---|
-| `syncsmith init` | Available | Create or update `.syncsmith.toml` interactively (see below). |
-| `syncsmith sync` | Available | Synchronize files according to their policy (see below). Exits 0 when all processed entries succeeded, non-zero if any failed. |
-| `syncsmith check` | Available | Read-only verification that Automatic entries are up to date and Manual entries are still at their last synchronized version, for CI pipelines. Exits 0 when all checks pass, non-zero when files are not in sync; `--no-fail` reports them without failing, `-a`/`--all` also checks `manual` entries, `--json` renders the not-in-sync files as a JSON payload. |
+| `syncsmith init` | Create or update `.syncsmith.toml` interactively (see below). |
+| `syncsmith sync` | Synchronize files according to their policy (see below). Exits 0 when all processed entries succeeded, non-zero if any failed. |
+| `syncsmith check` | Read-only verification that Automatic entries are up to date and Manual entries are still at their last synchronized version, for CI pipelines. Exits 0 when all checks pass, non-zero when files are not in sync; `--no-fail` reports them without failing, `-a`/`--all` also checks `manual` entries, `--json` renders the not-in-sync files as a JSON payload. |
 
 ### `syncsmith init`
 
