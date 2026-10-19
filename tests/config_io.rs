@@ -133,6 +133,28 @@ fn save_atomic_replaces_the_content_of_an_existing_config() {
 }
 
 #[test]
+fn save_atomic_writes_paths_with_forward_slashes() {
+    let (_dir, path) = config_file();
+    let config = Config {
+        sync: vec![SyncEntry {
+            source: Source::Folder {
+                folder: r"C:\sources\rules".into(),
+            },
+            target: r"lints\base.yml".into(),
+            mode: Mode::Overwrite,
+            policy: Policy::Automatic,
+        }],
+    };
+
+    save_atomic(&path, &config).expect("save succeeds");
+
+    let written = fs::read_to_string(&path).expect("saved configuration is readable");
+    assert!(written.contains(r#"folder = "C:/sources/rules""#));
+    assert!(written.contains(r#"target = "lints/base.yml""#));
+    assert!(!written.contains('\\'));
+}
+
+#[test]
 fn save_atomic_failure_in_a_read_only_directory_keeps_the_original_config() {
     let (dir, path) = config_file();
     fs::write(&path, "original = \"content\"\n").expect("original configuration is written");

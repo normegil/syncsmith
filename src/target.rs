@@ -1,15 +1,30 @@
 //! Target-path vocabulary shared by the configuration validation and the
 //! `init`, `sync`, and `check` commands: lexical normalization and
 //! validation of target paths, relative to the target repository root.
+//!
+//! Repository-relative paths live in portable form everywhere in memory:
+//! `/` separators on every platform, produced by [`portable`] — see its
+//! documentation.
 
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::SyncsmithError;
 
+/// Converts `path` to the portable form: `/` separators on every platform.
+///
+/// GOTCHA: on Unix a file name containing a literal `\` is turned into a
+/// separator. The portable form is meant for repository-relative paths,
+/// where a backslash is always a Windows separator that leaked into the
+/// file.
+pub fn portable(path: &Path) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().replace('\\', "/"))
+}
+
 /// Lexically normalizes `path` without touching the filesystem.
 ///
 /// `.` components are dropped, `..` pops one component; a leading `..`
-/// (escape from the root) is preserved so callers can detect it.
+/// (escape from the root) is preserved so callers can detect it. The
+/// result is in portable form ([`portable`]).
 pub fn normalize(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -23,7 +38,7 @@ pub fn normalize(path: &Path) -> PathBuf {
             other => normalized.push(other.as_os_str()),
         }
     }
-    normalized
+    portable(&normalized)
 }
 
 /// Validates that `target` is a usable, repository-contained path and
@@ -58,9 +73,25 @@ fn starts_with_parent(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize, validate_relative_target};
+    use super::{normalize, portable, validate_relative_target};
     use crate::error::SyncsmithError;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn portable_replaces_backslash_separators() {
+        assert_eq!(
+            portable(Path::new(r"a\b\c.yml")),
+            PathBuf::from("a/b/c.yml")
+        );
+    }
+
+    #[test]
+    fn normalize_returns_portable_separators() {
+        assert_eq!(
+            normalize(Path::new(r"a\b\c.yml")),
+            PathBuf::from("a/b/c.yml")
+        );
+    }
 
     #[test]
     fn normalize_drops_current_and_applies_parent_components() {

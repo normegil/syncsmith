@@ -55,6 +55,10 @@ A configuration is rejected when loading or when written by `init` if:
 
 `$VAR` and `${VAR}` references are expanded in all string fields (repository, ref, path, folder, target) **at load time, in memory only**. The `.syncsmith.toml` file itself keeps the raw `$VAR`/`${VAR}` strings, so a configuration written on one machine stays portable to machines where the variables resolve differently. A `$` that does not start a valid variable name stays literal; referencing an unset variable is an error.
 
+## Path separators
+
+All path fields of `.syncsmith.toml` and `.syncsmith.lock` (`path`, `folder`, `target`) are written with forward slashes, whatever the platform the file was generated on. Backslash separators in hand-written values are normalized at load time, so a configuration initialized on Windows keeps working; the portable form is written back the next time the file is saved.
+
 ## Synchronization semantics
 
 The behaviors below describe the `sync` command.

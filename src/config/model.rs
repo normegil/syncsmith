@@ -100,12 +100,14 @@ pub enum Source {
         #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
         git_ref: Option<String>,
         /// Path of the file or folder inside the repository.
+        #[serde(with = "crate::config::path")]
         path: PathBuf,
     },
     /// A local file or folder.
     Folder {
         /// Path of the file or folder (absolute, or relative to the
         /// directory containing the configuration file).
+        #[serde(with = "crate::config::path")]
         folder: PathBuf,
     },
 }
@@ -117,6 +119,7 @@ pub struct SyncEntry {
     /// What is synchronized.
     pub source: Source,
     /// Path of the target file or folder inside the target repository.
+    #[serde(with = "crate::config::path")]
     pub target: PathBuf,
     /// How the target is synchronized.
     pub mode: Mode,
@@ -245,6 +248,49 @@ policy = "manual"
         let text = toml::to_string(&config).expect("serializable config");
         let parsed: Config = toml::from_str(&text).expect("valid serialized config");
         assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn serializes_paths_with_forward_slashes() {
+        let config = Config {
+            sync: vec![SyncEntry {
+                source: Source::Repository {
+                    repository: "https://example.com/rules.git".into(),
+                    git_ref: None,
+                    path: r"lints\base.yml".into(),
+                },
+                target: r"lints\base.yml".into(),
+                mode: Mode::Overwrite,
+                policy: Policy::Automatic,
+            }],
+        };
+        let text = toml::to_string(&config).expect("serializable config");
+        assert!(text.contains(r#"path = "lints/base.yml""#));
+        assert!(text.contains(r#"target = "lints/base.yml""#));
+    }
+
+    #[test]
+    fn deserializes_backslash_paths_to_portable_form() {
+        let input = r#"
+[[sync]]
+source = { repository = 'https://example.com/rules.git', path = 'lints\base.yml' }
+target = 'lints\base.yml'
+mode = "overwrite"
+policy = "automatic"
+"#;
+        let config: Config = toml::from_str(input).expect("backslash paths are accepted");
+        assert_eq!(
+            config.sync[0].target,
+            std::path::PathBuf::from("lints/base.yml")
+        );
+        assert_eq!(
+            config.sync[0].source,
+            Source::Repository {
+                repository: "https://example.com/rules.git".into(),
+                git_ref: None,
+                path: "lints/base.yml".into(),
+            }
+        );
     }
 
     #[test]

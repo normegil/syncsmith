@@ -20,6 +20,7 @@ use crate::commands::sync::lock::LockRecord;
 use crate::config::{Source, SyncEntry};
 use crate::error::SyncsmithError;
 use crate::git;
+use crate::target::portable;
 
 /// Maximum directory depth walked when reading a folder source (same bound
 /// as the `init` source browser).
@@ -373,7 +374,9 @@ fn read_git_tree(
         if !meta.starts_with(b"100") {
             continue;
         }
-        let relative = PathBuf::from(String::from_utf8_lossy(name).into_owned());
+        // Git already emits forward slashes; `portable` keeps the walk-key
+        // invariant local and obvious.
+        let relative = portable(&PathBuf::from(String::from_utf8_lossy(name).into_owned()));
         let spec = format!("{}:{}/{}", read.git_ref, git_path(path), relative.display());
         let content = git::run_in(read.repo, &["show", &spec]).map_err(|failure| {
             SyncsmithError::SourceLoad {
@@ -407,7 +410,7 @@ fn read_tree(root: &Path, origin: &str) -> Result<BTreeMap<PathBuf, Vec<u8>>, Sy
             if file_type.is_symlink() {
                 continue;
             }
-            let relative = prefix.join(entry.file_name());
+            let relative = portable(&prefix.join(entry.file_name()));
             if file_type.is_dir() {
                 if depth < MAX_WALK_DEPTH {
                     queue.push_back((entry.path(), relative, depth + 1));

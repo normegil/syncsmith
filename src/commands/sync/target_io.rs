@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::SyncsmithError;
+use crate::target::portable;
 
 /// Reads the current content of a target file; `None` when it is missing.
 pub(crate) fn read_target(path: &Path) -> Result<Option<Vec<u8>>, SyncsmithError> {
@@ -59,7 +60,7 @@ pub(crate) fn list_target_files(dir: &Path) -> Result<Vec<PathBuf>, SyncsmithErr
             if file_type.is_symlink() {
                 continue;
             }
-            let relative = prefix.join(entry.file_name());
+            let relative = portable(&prefix.join(entry.file_name()));
             if file_type.is_dir() {
                 if depth < MAX_TARGET_WALK_DEPTH {
                     queue.push_back((entry.path(), relative, depth + 1));

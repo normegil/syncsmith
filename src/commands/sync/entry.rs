@@ -15,6 +15,7 @@ use crate::commands::sync::source::{self, SnapshotKind, SourceSnapshot};
 use crate::commands::sync::target_io::list_target_files;
 use crate::config::{Source, SyncEntry};
 use crate::error::SyncsmithError;
+use crate::target::portable;
 
 /// One target file of an entry, positioned in the source and the target.
 pub struct TargetFile {
@@ -107,7 +108,7 @@ fn target_file(
     latest: Option<Vec<u8>>,
 ) -> TargetFile {
     let key = match relative {
-        Some(relative) => normalized_target.join(relative),
+        Some(relative) => portable(&normalized_target.join(relative)),
         None => normalized_target.to_path_buf(),
     };
     TargetFile {

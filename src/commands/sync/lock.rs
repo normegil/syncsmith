@@ -21,7 +21,9 @@ pub const LOCK_FILE_NAME: &str = ".syncsmith.lock";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LockRecord {
-    /// Normalized target path (relative to the target repository root).
+    /// Normalized target path (relative to the target repository root),
+    /// in portable form.
+    #[serde(with = "crate::config::path")]
     pub target: PathBuf,
     /// Source version at the last successful synchronization: commit hash
     /// for git sources, content blob hash for folder sources.
@@ -151,6 +153,29 @@ mod tests {
             version: version.into(),
             content: content.into(),
         }
+    }
+
+    #[test]
+    fn serializes_targets_with_forward_slashes() {
+        let mut lock = LockFile::default();
+        lock.upsert(record(r"a\b.yml", "abc123", "def456"));
+        let text = lock.to_toml().expect("lock serializes");
+        assert!(text.contains(r#"target = "a/b.yml""#));
+    }
+
+    #[test]
+    fn deserializes_backslash_targets_to_portable_form() {
+        let raw = r#"
+[[record]]
+target = 'a\b.yml'
+version = "abc123"
+content = "def456"
+"#;
+        let lock = LockFile::from_toml(raw).expect("backslash targets are accepted");
+        assert_eq!(
+            lock.record(&PathBuf::from("a/b.yml")),
+            Some(&record("a/b.yml", "abc123", "def456"))
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod discovery;
 pub mod env;
 pub mod io;
 pub mod model;
+pub mod path;
 
 pub use model::{Config, Mode, Policy, Source, SyncEntry};
 
