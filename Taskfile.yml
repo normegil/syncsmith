@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: '3'
+
+tasks:
+  check:
+    desc: Check that the artefact build as expected
+    cmds:
+      - cargo check
+
+  format:
+    desc: Format the code
+    cmds:
+      - cargo fmt
+
+  lint:
+    desc: Check & Lint the code
+    sum: |
+        Lint the current project.
+
+        Will fail on warnings
+    cmds:
+      - cargo clippy --all-targets -- -D warnings
+      - cargo fmt --check
+
+  test:
+    desc: Run the tests
+    cmds:
+      - cargo test --all-features
+
+  audit:
+    desc: Audit dependencies in Cargo.lock for vulnerabilities
+    cmds:
+        - cargo audit
+
+  verify:
+    desc: Perform all verifications
+    deps: [check, lint, test, audit]
+
+  sbom:
+    desc: Generate a CycloneDX SBOM
+    cmds:
+      - cargo cyclonedx -f json
+
+  build:
+    deps: [verify]
+    desc: Build the code
+    cmds:
+      - cargo build
+
+  release:
+    desc: Build the code
+    deps: [verify, sbom]
+    cmds:
+      - cargo build --release

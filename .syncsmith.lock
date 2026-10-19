@@ -1,0 +1,14 @@
+[[record]]
+target = '.ai\rules\commons.md'
+version = "f378acc5c23ea5bc6c007c340baec2f564a28df3"
+content = "e2b1a5358d6e17ec009b8539c3db11427c3056c1"
+
+[[record]]
+target = '.ai\rules\rust.md'
+version = "f378acc5c23ea5bc6c007c340baec2f564a28df3"
+content = "16887e141c1e6fb83c0b978d63bd12b4b2625e1d"
+
+[[record]]
+target = "Taskfile.yml"
+version = "f378acc5c23ea5bc6c007c340baec2f564a28df3"
+content = "abdd4c764a5db3017d2872a39f5c66e97dc35dca"

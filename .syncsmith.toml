@@ -1,0 +1,26 @@
+[[sync]]
+target = '.ai\rules\commons.md'
+mode = "overwrite"
+policy = "automatic"
+
+[sync.source]
+repository = "https://github.com/normegil/file-reference"
+path = '.ai\rules\commons.md'
+
+[[sync]]
+target = '.ai\rules\rust.md'
+mode = "overwrite"
+policy = "automatic"
+
+[sync.source]
+repository = "https://github.com/normegil/file-reference"
+path = '.ai\rules\rust.md'
+
+[[sync]]
+target = "Taskfile.yml"
+mode = "patch"
+policy = "automatic"
+
+[sync.source]
+repository = "https://github.com/normegil/file-reference"
+path = 'rust\Taskfile.yml'

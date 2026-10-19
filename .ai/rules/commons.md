@@ -15,10 +15,11 @@ These are generic guidelines for all languages, which must be read and followed.
 ### 2 — While Coding
 
 - **Commons-C-1 (MUST)** Name functions and data models using existing domain vocabulary for consistency.
-- **Commons-C-2 (SHOULD)** Prefer small, composable, and testable functions.
+- **Commons-C-2 (MUST)** Prefer small, composable, and testable functions.
 - **Commons-C-3 (SHOULD)** Delete dead code and stale comments rather than commenting them out.
-- **Commons-C-4 (SHOULD)** Functions should be pure as much as possible (without impairing too much on performances).
-- **Commons-C-5 (SHOULD)** Structs should be immutable as much as possible (without impairing too much on performances).
+- **Commons-C-4 (SHOULD)** Functions should be pure as much as possible.
+- **Commons-C-5 (SHOULD)** Structs should be immutable as much as possible.
+- **Commons-C-6 (SHOULD)** Variables should be defined close to their usage.
 
 ---
 
