@@ -75,6 +75,20 @@ stdout carries exactly the paths modified, created, or deleted by the run **for 
 ]
 ```
 
+#### One-off sync from a source: `--override-from`
+
+A single target can be synchronized directly from a source, bypassing the configuration entirely — a one-off import, or a repository that must stay config-free:
+
+```
+syncsmith sync --override-from <Source> [--ref <ref>] [--source-path <path>] <Target>
+```
+
+- **Stateless**: no `.syncsmith.toml` is loaded or required and no `.syncsmith.lock` is read or written; an existing configuration or lock file is left untouched. The configuration is never loaded — not even one given by `--config`: only its location matters (see `<Target>`).
+- **Overwrite without warning**: the target is always overwritten with the latest source content — local edits are discarded. Folder sources fully mirror the tree, deletions included, like configuration-driven `overwrite` folder entries; parent directories of the target are created as needed.
+- `<Target>` is exactly one relative path, resolved against the directory containing the configuration file when one exists (including via `--config`), otherwise the git repository root — or the current directory outside any repository. It has the same validation rules as configuration targets and cannot be combined with `--all`. Relative local source paths resolve against the current directory.
+- `<Source>` is a remote repository URL, a local git repository path, or a local file/folder path. A remote URL is always a repository; a local path is a plain file/folder read, unless `--ref` and/or `--source-path` make it a repository read at the given ref. An omitted `--ref` reads the repository's default branch (`HEAD`); an omitted `--source-path` defaults to the target's file name, searched at the repository root. `--ref` and `--source-path` require `--override-from`.
+- Exit codes and the stdout report are identical to `sync` (the global `--json` flag is supported); diagnostics go to stderr.
+
 #### Pre-commit hook
 
 The hook installed by `init` runs `syncsmith sync` and stages exactly the files it reports — no target is embedded in the script, so it never goes stale when the configuration is edited:

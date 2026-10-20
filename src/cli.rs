@@ -66,6 +66,21 @@ pub enum Command {
         /// Synchronize every entry, manual ones included.
         #[arg(long, conflicts_with = "targets")]
         all: bool,
+
+        /// One-off, stateless synchronization source: a remote
+        /// repository URL, a local git repository path, or a local
+        /// file/folder path. Bypasses the configuration file and the
+        /// lock file entirely; the target is always overwritten.
+        #[arg(long = "override-from", value_name = "SOURCE", conflicts_with = "all")]
+        override_from: Option<String>,
+
+        /// Branch, tag, or commit to read a repository source at.
+        #[arg(long = "ref", value_name = "REF", requires = "override_from")]
+        git_ref: Option<String>,
+
+        /// Path of the file or folder inside a repository source.
+        #[arg(long = "source-path", value_name = "PATH", requires = "override_from")]
+        source_path: Option<PathBuf>,
     },
 
     /// Check that the target files are synchronized, without writing
@@ -144,6 +159,9 @@ mod tests {
             Command::Sync {
                 targets: Vec::new(),
                 all: false,
+                override_from: None,
+                git_ref: None,
+                source_path: None,
             }
         );
     }
@@ -157,6 +175,9 @@ mod tests {
             Command::Sync {
                 targets: vec![PathBuf::from("a.yml"), PathBuf::from("dir/b.yml")],
                 all: false,
+                override_from: None,
+                git_ref: None,
+                source_path: None,
             }
         );
         let cli = Cli::try_parse_from(["syncsmith", "sync", "--all"]).expect("valid input");
@@ -165,6 +186,9 @@ mod tests {
             Command::Sync {
                 targets: Vec::new(),
                 all: true,
+                override_from: None,
+                git_ref: None,
+                source_path: None,
             }
         );
     }
@@ -172,6 +196,79 @@ mod tests {
     #[test]
     fn all_conflicts_with_explicit_targets() {
         let result = Cli::try_parse_from(["syncsmith", "sync", "--all", "a.yml"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_sync_override_from_with_a_single_target() {
+        let cli = Cli::try_parse_from([
+            "syncsmith",
+            "sync",
+            "--override-from",
+            "https://example.com/rules.git",
+            "a.yml",
+        ])
+        .expect("valid input");
+        assert_eq!(
+            cli.command,
+            Command::Sync {
+                targets: vec![PathBuf::from("a.yml")],
+                all: false,
+                override_from: Some("https://example.com/rules.git".into()),
+                git_ref: None,
+                source_path: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_sync_override_from_with_ref_and_source_path() {
+        let cli = Cli::try_parse_from([
+            "syncsmith",
+            "sync",
+            "--override-from",
+            "https://example.com/rules.git",
+            "--ref",
+            "main",
+            "--source-path",
+            "lints/base.yml",
+            "a.yml",
+        ])
+        .expect("valid input");
+        assert_eq!(
+            cli.command,
+            Command::Sync {
+                targets: vec![PathBuf::from("a.yml")],
+                all: false,
+                override_from: Some("https://example.com/rules.git".into()),
+                git_ref: Some("main".into()),
+                source_path: Some(PathBuf::from("lints/base.yml")),
+            }
+        );
+    }
+
+    #[test]
+    fn ref_requires_override_from() {
+        let result = Cli::try_parse_from(["syncsmith", "sync", "--ref", "main", "a.yml"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn source_path_requires_override_from() {
+        let result = Cli::try_parse_from(["syncsmith", "sync", "--source-path", "a.yml", "a.yml"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn override_from_conflicts_with_all() {
+        let result = Cli::try_parse_from([
+            "syncsmith",
+            "sync",
+            "--override-from",
+            "src",
+            "--all",
+            "a.yml",
+        ]);
         assert!(result.is_err());
     }
 

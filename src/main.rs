@@ -9,9 +9,9 @@ use std::process::ExitCode;
 use syncsmith::cli::{Cli, Command};
 use syncsmith::commands::check::CheckInvocation;
 use syncsmith::commands::init::InitTarget;
-use syncsmith::commands::sync::SyncInvocation;
+use syncsmith::commands::sync::{DirectRun, OverrideArgs, SyncInvocation};
 use syncsmith::commands::{check, init, sync};
-use syncsmith::config::discovery::resolve_config_path;
+use syncsmith::config::discovery::{resolve_config_path, target_base};
 use syncsmith::error::SyncsmithError;
 use syncsmith::logging;
 
@@ -45,14 +45,33 @@ fn dispatch(cli: &Cli) -> Result<(), SyncsmithError> {
                 init::run(target, json)
             }
         }
-        Command::Sync { targets, all } => sync::run_command(
-            &resolution,
-            SyncInvocation {
-                targets: targets.clone(),
-                all: *all,
-                json,
-            },
-        ),
+        Command::Sync {
+            targets,
+            all,
+            override_from,
+            git_ref,
+            source_path,
+        } => {
+            let invocation = match override_from {
+                Some(source) => SyncInvocation::Direct(DirectRun {
+                    args: OverrideArgs {
+                        source: source.clone(),
+                        git_ref: git_ref.clone(),
+                        source_path: source_path.clone(),
+                    },
+                    targets: targets.clone(),
+                    base: target_base(&resolution)?,
+                    json,
+                }),
+                None => SyncInvocation::Configured {
+                    resolution,
+                    targets: targets.clone(),
+                    all: *all,
+                    json,
+                },
+            };
+            sync::run_command(invocation)
+        }
         Command::Check {
             targets,
             all,

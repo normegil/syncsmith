@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use crate::commands::sync::lock::LOCK_FILE_NAME;
 use crate::config::discovery::Resolution;
 use crate::config::{self, Config};
 use crate::error::SyncsmithError;
@@ -46,6 +47,28 @@ impl SyncContext {
             lock_path: resolution.lock_path(),
             target_root,
         })
+    }
+
+    /// Builds the context of a stateless run (the `--override-from` flow).
+    ///
+    /// `config_dir` is what relative source paths resolve against (the
+    /// current directory of the stateless flow); `target_root` is what
+    /// target paths resolve against (the configuration directory when a
+    /// configuration file exists, the repository root otherwise — see
+    /// [`crate::config::discovery::target_base`]). The configuration is
+    /// empty: nothing is loaded.
+    ///
+    /// GOTCHA: the stateless run must never load or save the lock file;
+    /// `lock_path` is filled only to keep the struct total, and no code
+    /// may read or write through it.
+    pub fn stateless(config_dir: PathBuf, target_root: PathBuf) -> Self {
+        let lock_path = config_dir.join(LOCK_FILE_NAME);
+        Self {
+            config: Config::default(),
+            config_dir,
+            target_root,
+            lock_path,
+        }
     }
 }
 

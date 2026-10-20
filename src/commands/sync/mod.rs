@@ -13,6 +13,7 @@
 //!
 //! Layout:
 //! - [`context`]: the run context resolved from the configuration location;
+//! - [`direct`]: the stateless `sync --override-from` flow;
 //! - [`entry`]: the walk of an entry's target files, shared with `check`;
 //! - [`run`]: the per-entry and per-file orchestration;
 //! - [`target_io`]: target filesystem access;
@@ -20,6 +21,7 @@
 //!   supporting domains.
 
 pub mod context;
+pub mod direct;
 pub mod entry;
 pub mod lock;
 pub mod merge;
@@ -30,6 +32,7 @@ pub mod source;
 pub mod target_io;
 
 pub use context::SyncContext;
+pub use direct::{DirectRun, OverrideArgs};
 pub use entry::{EntryFiles, FileJob, TargetFile};
 pub use lock::{LOCK_FILE_NAME, LockFile, LockRecord};
 pub use report::{Action, ChangedFile, ReportFormat};
@@ -41,33 +44,49 @@ pub(crate) use context::current_dir;
 use crate::config::discovery::Resolution;
 use crate::error::SyncsmithError;
 
-/// Arguments of one `sync` invocation.
-pub struct SyncInvocation {
-    /// Target paths to synchronize, whatever their policy.
-    pub targets: Vec<std::path::PathBuf>,
-    /// Synchronize every entry, manual ones included.
-    pub all: bool,
-    /// Emit the stdout payload as a single JSON document.
-    pub json: bool,
+/// Input of one `sync` invocation: the configuration-driven run, or the
+/// one-off stateless `--override-from` run.
+pub enum SyncInvocation {
+    /// The configuration-driven run of the selected entries.
+    Configured {
+        /// Resolved configuration location, loaded and validated.
+        resolution: Resolution,
+        /// Target paths to synchronize, whatever their policy.
+        targets: Vec<std::path::PathBuf>,
+        /// Synchronize every entry, manual ones included.
+        all: bool,
+        /// Emit the stdout payload as a single JSON document.
+        json: bool,
+    },
+    /// The one-off stateless `--override-from` run.
+    Direct(DirectRun),
 }
 
-/// Runs the `sync` command: resolves the context, synchronizes the selected
-/// entries, writes the changed paths to stdout, and fails when any entry
-/// failed.
-pub fn run_command(
-    resolution: &Resolution,
-    invocation: SyncInvocation,
-) -> Result<(), SyncsmithError> {
-    let ctx = SyncContext::resolve(resolution)?;
-    let selection = Selection::from_args(invocation.all, invocation.targets);
-    let outcome = run(&ctx, &selection)?;
-    write_report(invocation.json, &outcome)?;
-    if outcome.failures.is_empty() {
-        Ok(())
-    } else {
-        Err(SyncsmithError::SyncFailures {
-            count: outcome.failures.len(),
-        })
+/// Runs the `sync` command: the configured run resolves the context,
+/// synchronizes the selected entries, writes the changed paths to stdout,
+/// and fails when any entry failed; the direct run delegates to the
+/// stateless flow, which loads no configuration.
+pub fn run_command(invocation: SyncInvocation) -> Result<(), SyncsmithError> {
+    match invocation {
+        SyncInvocation::Configured {
+            resolution,
+            targets,
+            all,
+            json,
+        } => {
+            let ctx = SyncContext::resolve(&resolution)?;
+            let selection = Selection::from_args(all, targets);
+            let outcome = run(&ctx, &selection)?;
+            write_report(json, &outcome)?;
+            if outcome.failures.is_empty() {
+                Ok(())
+            } else {
+                Err(SyncsmithError::SyncFailures {
+                    count: outcome.failures.len(),
+                })
+            }
+        }
+        SyncInvocation::Direct(run) => direct::run_command(run),
     }
 }
 

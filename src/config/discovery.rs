@@ -50,9 +50,7 @@ pub fn resolve_config_path(args: &GlobalArgs) -> Result<Resolution, SyncsmithErr
             exists: explicit.is_file(),
         });
     }
-    let cwd = std::env::current_dir().map_err(|source| SyncsmithError::InvalidArguments {
-        reason: format!("cannot determine the current directory: {source}"),
-    })?;
+    let cwd = current_dir()?;
     if let Some(found) = find_config(&cwd) {
         return Ok(Resolution {
             path: found,
@@ -84,6 +82,28 @@ pub fn find_config(start: &Path) -> Option<PathBuf> {
         current = directory.parent();
     }
     None
+}
+
+/// The directory a stateless run resolves its target against.
+///
+/// The directory containing the configuration file when one exists (its
+/// location only — the stateless flow loads nothing); otherwise the git
+/// repository root containing the current directory, or the current
+/// directory outside any repository (same fallback as
+/// [`resolve_config_path`]).
+pub fn target_base(resolution: &Resolution) -> Result<PathBuf, SyncsmithError> {
+    if resolution.exists {
+        return Ok(resolution.dir());
+    }
+    let cwd = current_dir()?;
+    Ok(git::repo_root(&cwd).unwrap_or(cwd))
+}
+
+/// The current working directory, as an actionable error context.
+fn current_dir() -> Result<PathBuf, SyncsmithError> {
+    std::env::current_dir().map_err(|source| SyncsmithError::InvalidArguments {
+        reason: format!("cannot determine the current directory: {source}"),
+    })
 }
 
 #[cfg(test)]

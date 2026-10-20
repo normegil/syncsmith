@@ -776,14 +776,12 @@ fn the_sync_command_requires_an_existing_configuration() {
     })
     .expect("the configuration location resolves");
 
-    let error = commands::sync::run_command(
-        &resolution,
-        SyncInvocation {
-            targets: Vec::new(),
-            all: false,
-            json: false,
-        },
-    )
+    let error = commands::sync::run_command(SyncInvocation::Configured {
+        resolution,
+        targets: Vec::new(),
+        all: false,
+        json: false,
+    })
     .expect_err("a missing configuration fails the command");
 
     assert!(matches!(error, SyncsmithError::ConfigNotFound { .. }));

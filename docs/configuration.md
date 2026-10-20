@@ -2,6 +2,8 @@
 
 Synchronization is based on a toml file named `.syncsmith.toml` at the repository root (or the path given to `--config`). This page documents the exact schema the implementation reads and writes.
 
+A configuration file is not required for a one-off synchronization: `syncsmith sync --override-from <Source> [--ref <ref>] [--source-path <path>] <Target>` synchronizes a single target directly from a source, loading no configuration and touching no lock file — the target is always overwritten with the latest source content, and it resolves against this configuration file's directory when the file exists (the repository root otherwise). See the `sync` section of the README for the full semantics.
+
 The file holds one top-level `sync` array; each `[[sync]]` entry maps one source file or folder to one target path. Different targets may have different sources, but each target is mapped by exactly one entry.
 
 For each entry:
