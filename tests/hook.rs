@@ -8,9 +8,11 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use common::{Answer, ScriptedPrompter, enter, git};
 use tempfile::TempDir;
@@ -121,11 +123,14 @@ fn accepted_hook_offer_installs_an_executable_pre_commit_hook() {
         fs::read_to_string(&hook).expect("installed hook is readable"),
         HOOK_SCRIPT
     );
-    let mode = fs::metadata(&hook)
-        .expect("hook metadata is readable")
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o777, 0o755);
+    #[cfg(unix)]
+    {
+        let mode = fs::metadata(&hook)
+            .expect("hook metadata is readable")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
 }
 
 #[test]

@@ -1,8 +1,10 @@
 //! Integration tests for configuration loading and atomic saving.
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use tempfile::TempDir;
 
@@ -155,6 +157,7 @@ fn save_atomic_writes_paths_with_forward_slashes() {
 }
 
 #[test]
+#[cfg(unix)]
 fn save_atomic_failure_in_a_read_only_directory_keeps_the_original_config() {
     let (dir, path) = config_file();
     fs::write(&path, "original = \"content\"\n").expect("original configuration is written");
