@@ -478,10 +478,12 @@ fn run_with_restart_prefills_the_source_prompts_from_the_discarded_git_entry() {
     git(origin.path(), &["commit", "-m", "keep"]);
     git(origin.path(), &["branch", "stable"]);
     let entered = folder_source(origin.path());
+    // Literal (single-quoted) TOML string: the interpolated path may carry
+    // Windows separators, which basic strings would read as escapes.
     let existing = format!(
         r#"
 [[sync]]
-source = {{ repository = "{entered}", ref = "stable", path = "old.yml" }}
+source = {{ repository = '{entered}', ref = "stable", path = "old.yml" }}
 target = "old.yml"
 mode = "patch"
 policy = "manual"
