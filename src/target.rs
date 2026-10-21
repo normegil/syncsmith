@@ -50,7 +50,7 @@ pub fn validate_relative_target(target: &Path) -> Result<PathBuf, SyncsmithError
             reason: "target must not be empty".into(),
         });
     }
-    if target.is_absolute() {
+    if is_anchored(target) {
         return Err(SyncsmithError::InvalidTarget {
             target: target.to_string_lossy().into_owned(),
             reason: "target must be relative to the target repository root".into(),
@@ -64,6 +64,18 @@ pub fn validate_relative_target(target: &Path) -> Result<PathBuf, SyncsmithError
         });
     }
     Ok(normalized)
+}
+
+/// Whether the path is anchored outside the repository: absolute, or
+/// carrying a Windows prefix (`C:`, UNC) or root (`/`, `\`) component.
+///
+/// GOTCHA: Windows `Path::is_absolute` requires both a prefix and a root,
+/// so `/etc/passwd` and `C:file` are only caught by the component check.
+fn is_anchored(path: &Path) -> bool {
+    path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
 }
 
 /// Whether the path starts with `..`, escaping the repository root.
@@ -120,6 +132,20 @@ mod tests {
             validate_relative_target(Path::new("/etc/passwd")),
             Err(SyncsmithError::InvalidTarget { .. })
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_rooted_targets_are_rejected() {
+        for target in [r"\etc\passwd", r"C:\etc\passwd", "C:passwd"] {
+            assert!(
+                matches!(
+                    validate_relative_target(Path::new(target)),
+                    Err(SyncsmithError::InvalidTarget { .. })
+                ),
+                "`{target}` must be rejected as anchored"
+            );
+        }
     }
 
     #[test]

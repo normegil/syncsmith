@@ -8,6 +8,7 @@ use crate::config::Source;
 use crate::config::env;
 use crate::error::SyncsmithError;
 use crate::git;
+use crate::target::portable;
 
 use super::flow::FlowFs;
 use super::target::TargetFs;
@@ -200,7 +201,9 @@ fn classify(
     if file_type.is_symlink() {
         return Ok(None);
     }
-    let relative = node.prefix.join(entry.file_name());
+    // Portable form: `join` uses the native separator, which would leak
+    // `\` into the tree paths (and their labels) on Windows.
+    let relative = portable(&node.prefix.join(entry.file_name()));
     let is_dir = file_type.is_dir();
     let child = (is_dir && node.depth < MAX_WALK_DEPTH).then(|| WalkNode {
         dir: entry.path(),

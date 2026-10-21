@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::config::{Mode, Policy, Source, SyncEntry};
 use crate::error::SyncsmithError;
-use crate::target::normalize;
+use crate::target::{normalize, portable};
 
 use super::review;
 use super::source_loader::{SourceRef, SourceTree, TreeItem};
@@ -611,7 +611,9 @@ fn build_entry(spec: &NewEntry, target: PathBuf) -> SyncEntry {
             path: spec.item.relative.clone(),
         },
         SourceRef::Folder { folder } => Source::Folder {
-            folder: PathBuf::from(folder).join(&spec.item.relative),
+            // Portable form: `join` uses the native separator, which would
+            // leak `\` into the stored path (and its review label) on Windows.
+            folder: portable(&PathBuf::from(folder).join(&spec.item.relative)),
         },
     };
     SyncEntry {
@@ -1338,6 +1340,32 @@ mod tests {
         let policy = prompts.get(2).expect("the policy prompt is recorded");
         assert_eq!(policy.default.as_deref(), Some("Automatic"));
         assert_eq!(policy.labels, vec!["Automatic", "Manual"]);
+    }
+
+    #[test]
+    fn folder_entry_source_paths_are_portable() {
+        let fs = ScriptedFs {
+            trees: HashMap::from([("rules".to_string(), tree(vec![file("a.yml")]))]),
+        };
+        let prompter = ScriptedPrompter::new(vec![
+            Answer::Confirm(true),
+            Answer::Select("Local folder".into()),
+            Answer::Text("rules".into()),
+            Answer::Multi(vec!["a.yml".into()]),
+            Answer::TextDefault("a.yml".into()),
+            Answer::Select("Overwrite".into()),
+            Answer::Select("Automatic".into()),
+            Answer::Confirm(false),
+            Answer::Select("Validate".into()),
+        ]);
+        let mut state = InitState::default();
+        let entries = run_flow(&prompter, &fs, &mut state).expect("flow completes");
+        // `build_entry` joins the folder and item paths; the stored path
+        // must use `/` on every platform so review labels match.
+        let Source::Folder { folder } = &entries[0].source else {
+            panic!("expected a folder source");
+        };
+        assert_eq!(folder.to_string_lossy(), "rules/a.yml");
     }
 
     #[test]
