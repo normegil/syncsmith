@@ -17,6 +17,8 @@ cargo build              # or build in place
 cargo test               # run the test suite
 ```
 
+Prebuilt binaries are attached to each [GitHub release](../../releases).
+
 ## Commands
 
 | Command | Description |

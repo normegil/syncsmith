@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    name: check tag / Cargo.toml version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION="$(sed -n '/^\[package\]/,/^\[/p' Cargo.toml | grep -m1 '^version' | sed 's/.*"\(.*\)"/\1/')"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "ERROR: tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)." >&2
+            echo "Update the version in Cargo.toml before tagging." >&2
+            exit 1
+          fi
+          echo "Tag $TAG_VERSION matches Cargo.toml."
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: check-version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binary: syncsmith
+            archive_ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: syncsmith.exe
+            archive_ext: zip
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}
+          cache-on-failure: true
+
+      - name: musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: install cargo-audit
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: cargo install cargo-audit --locked --version 0.22.2
+
+      - name: cargo audit
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: cargo audit
+
+      - name: cargo check
+        run: cargo check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --all-features
+
+      - name: generate SBOM
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          cargo install cargo-cyclonedx --locked --version 0.5.9
+          cargo cyclonedx -f json --override-filename sbom
+          mkdir -p dist
+          cp sbom.json dist/sbom.json
+
+      - name: build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: set version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: package archive (tar.gz)
+        if: matrix.archive_ext == 'tar.gz'
+        run: |
+          set -euo pipefail
+          tar -czf "dist/syncsmith-${VERSION}-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" \
+            "${{ matrix.binary }}"
+
+      - name: package archive (zip)
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.binary }}" `
+            -DestinationPath "dist/syncsmith-${env:VERSION}-${{ matrix.target }}.zip"
+
+      - name: checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="syncsmith-${VERSION}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          (cd dist && sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: create draft release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*
