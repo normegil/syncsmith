@@ -4,6 +4,15 @@ version = "0.2.0"
 edition = "2024"
 description = "syncsmith keeps files synchronized between a source (git repo or folder) and a target git repository, driven by a .syncsmith.toml file."
 license = "AGPL-3.0-or-later"
+repository = "https://github.com/normegil/syncsmith"
+include = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "LICENSE",
+  "README.md",
+  "src/**/*",
+  "tests/**/*",
+]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
