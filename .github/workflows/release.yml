@@ -39,6 +39,10 @@ jobs:
             target: x86_64-unknown-linux-musl
             binary: syncsmith
             archive_ext: tar.gz
+          - os: ubuntu-latest-arm
+            target: aarch64-unknown-linux-musl
+            binary: syncsmith
+            archive_ext: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: syncsmith.exe
@@ -57,7 +61,7 @@ jobs:
           cache-on-failure: true
 
       - name: musl tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
+        if: endsWith(matrix.target, '-unknown-linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: install cargo-audit
